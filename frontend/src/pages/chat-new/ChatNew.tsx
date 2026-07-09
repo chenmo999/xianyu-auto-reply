@@ -4,8 +4,8 @@
  * 三栏布局：左侧账号列表 | 中间会话列表 | 右侧聊天记录
  * 支持多账号切换，基于WebSocket API获取数据
  */
-import { useEffect, useState, useRef, useCallback } from 'react'
-import { Loader2, LogIn, LogOut, MessageCircle, RefreshCw, User, ChevronUp, X, Send, AlertCircle, Ban, ImagePlus } from 'lucide-react'
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
+import { Loader2, LogIn, LogOut, MessageCircle, RefreshCw, User, ChevronUp, X, Send, AlertCircle, Ban, ImagePlus, Sparkles, ExternalLink } from 'lucide-react'
 import { useUIStore } from '@/store/uiStore'
 import {
   getChatAccounts,
@@ -51,11 +51,79 @@ const canRecallMessage = (message: ChatMessage) =>
   Date.now() - toTimestampMs(message.time) >= 0 &&
   Date.now() - toTimestampMs(message.time) <= 120_000
 
+type TextVariantStyle = 'restore' | 'bold' | 'sansBold' | 'script' | 'fullwidth' | 'circled'
+
+const textVariantOptions: Array<{ key: TextVariantStyle; label: string; example: string; description: string }> = [
+  { key: 'bold', label: '粗体', example: '𝐀𝐁𝐂 𝟏𝟐𝟑', description: '适合突出重点' },
+  { key: 'sansBold', label: '醒目', example: '𝗔𝗕𝗖 𝟭𝟮𝟯', description: '更清晰的粗体' },
+  { key: 'script', label: '花体', example: '𝒜𝒷𝒸', description: '适合英文昵称/短句' },
+  { key: 'fullwidth', label: '全角', example: 'ＡＢＣ １２３', description: '中英文间距更宽' },
+  { key: 'circled', label: '圆圈', example: 'Ⓐⓑⓒ ①②③', description: '适合短标记' },
+  { key: 'restore', label: '还原', example: 'ABC 123', description: '尽量还原为普通字' },
+]
+
+const charFromOffset = (code: number, base: number) => String.fromCodePoint(base + code)
+
+const scriptUpper = '𝒜ℬ𝒞𝒟ℰℱ𝒢ℋℐ𝒥𝒦ℒℳ𝒩𝒪𝒫𝒬ℛ𝒮𝒯𝒰𝒱𝒲𝒳𝒴𝒵'
+const scriptLower = '𝒶𝒷𝒸𝒹ℯ𝒻ℊ𝒽𝒾𝒿𝓀𝓁𝓂𝓃ℴ𝓅𝓆𝓇𝓈𝓉𝓊𝓋𝓌𝓍𝓎𝓏'
+const circledUpper = 'ⒶⒷⒸⒹⒺⒻⒼⒽⒾⒿⓀⓁⓂⓃⓄⓅⓆⓇⓈⓉⓊⓋⓌⓍⓎⓏ'
+const circledLower = 'ⓐⓑⓒⓓⓔⓕⓖⓗⓘⓙⓚⓛⓜⓝⓞⓟⓠⓡⓢⓣⓤⓥⓦⓧⓨⓩ'
+const circledDigits = ['⓪', '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨']
+
+const convertTextVariant = (text: string, style: TextVariantStyle) => {
+  if (style === 'restore') return text.normalize('NFKC')
+
+  return Array.from(text).map((char) => {
+    const code = char.charCodeAt(0)
+
+    // A-Z
+    if (code >= 65 && code <= 90) {
+      const index = code - 65
+      if (style === 'bold') return charFromOffset(index, 0x1D400)
+      if (style === 'sansBold') return charFromOffset(index, 0x1D5D4)
+      if (style === 'script') return Array.from(scriptUpper)[index] || char
+      if (style === 'fullwidth') return charFromOffset(index, 0xFF21)
+      if (style === 'circled') return Array.from(circledUpper)[index] || char
+    }
+
+    // a-z
+    if (code >= 97 && code <= 122) {
+      const index = code - 97
+      if (style === 'bold') return charFromOffset(index, 0x1D41A)
+      if (style === 'sansBold') return charFromOffset(index, 0x1D5EE)
+      if (style === 'script') return Array.from(scriptLower)[index] || char
+      if (style === 'fullwidth') return charFromOffset(index, 0xFF41)
+      if (style === 'circled') return Array.from(circledLower)[index] || char
+    }
+
+    // 0-9
+    if (code >= 48 && code <= 57) {
+      const index = code - 48
+      if (style === 'bold') return charFromOffset(index, 0x1D7CE)
+      if (style === 'sansBold') return charFromOffset(index, 0x1D7EC)
+      if (style === 'fullwidth') return charFromOffset(index, 0xFF10)
+      if (style === 'circled') return circledDigits[index]
+      return char
+    }
+
+    // 常用英文符号全角化
+    if (style === 'fullwidth' && code >= 33 && code <= 126) {
+      return charFromOffset(code - 33, 0xFF01)
+    }
+
+    return char
+  }).join('')
+}
+
 export function ChatNew() {
   const { addToast } = useUIStore()
 
   // 账号相关（分页加载）
   const [accounts, setAccounts] = useState<ChatAccount[]>([])
+  // 账号级别未读角标：后台账号收到新消息后，在左侧账号列表显示未读数
+  const [accountUnreadCounts, setAccountUnreadCounts] = useState<Record<string, number>>({})
+  // 账号最近消息时间：用于让来新消息的账号自动置顶
+  const [accountLastActivityAt, setAccountLastActivityAt] = useState<Record<string, number>>({})
   const [activeAccountId, setActiveAccountId] = useState('')
   const [loadingAccounts, setLoadingAccounts] = useState(false)
   const [connectingId, setConnectingId] = useState('')
@@ -80,8 +148,8 @@ export function ChatNew() {
   // 图片预览
   const [previewImage, setPreviewImage] = useState('')
 
-  // 用户信息缓存（otherUserId -> {avatar, nick}）
-  const userInfoCacheRef = useRef<Record<string, { avatar: string; nick: string }>>({})
+  // 用户信息缓存（otherUserId -> {avatar, nick, city}）
+  const userInfoCacheRef = useRef<Record<string, { avatar: string; nick: string; city?: string; cityChecked?: boolean }>>({})
 
   // 发送消息
   const [inputText, setInputText] = useState('')
@@ -90,6 +158,18 @@ export function ChatNew() {
   const imageInputRef = useRef<HTMLInputElement>(null)
   const [pendingImage, setPendingImage] = useState<{ file: File; previewUrl: string } | null>(null)
   const pendingImageRef = useRef<{ file: File; previewUrl: string } | null>(null)
+  const [showVariantPanel, setShowVariantPanel] = useState(false)
+  const variantPanelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (variantPanelRef.current && !variantPanelRef.current.contains(event.target as Node)) {
+        setShowVariantPanel(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
   // 当前客户订单与快捷短语
   const [customerOrders, setCustomerOrders] = useState<CustomerOrder[]>([])
@@ -115,8 +195,18 @@ export function ChatNew() {
   const [phraseContent, setPhraseContent] = useState('')
   const [savingPhrase, setSavingPhrase] = useState(false)
 
-  // 手动管理 WebSocket 连接的账号列表（仅用户显式操作时加入，页面刷新不自动重连）
+  // 手动管理 WebSocket 连接的账号列表（用户显式连接 / 一键全部连接后加入）
   const [wsAccountIds, setWsAccountIds] = useState<string[]>([])
+  const wsAccountIdsRef = useRef<string[]>([])
+  useEffect(() => { wsAccountIdsRef.current = wsAccountIds }, [wsAccountIds])
+
+  // 自动重连：账号长连接异常断开后，前端自动重新调用连接接口
+  const [autoReconnectEnabled, setAutoReconnectEnabled] = useState(true)
+  const autoReconnectEnabledRef = useRef(true)
+  useEffect(() => { autoReconnectEnabledRef.current = autoReconnectEnabled }, [autoReconnectEnabled])
+  const reconnectTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  const reconnectingAccountsRef = useRef<Set<string>>(new Set())
+  const [connectingAll, setConnectingAll] = useState(false)
 
   // 手机端 Tab 切换（桌面端 md+ 仍为四栏并排，本 state 不影响桌面布局）
   type MobileTab = 'accounts' | 'convs' | 'chat' | 'tools'
@@ -150,6 +240,72 @@ export function ChatNew() {
   const activeCidRef = useRef(activeCid)
   useEffect(() => { activeCidRef.current = activeCid }, [activeCid])
   const reloadOrdersRef = useRef<() => void>(() => {})
+
+  const bumpAccountToTop = useCallback((accountId: string, messageTime?: number) => {
+    if (!accountId) return
+    const activityTime = messageTime ? toTimestampMs(messageTime) : Date.now()
+    setAccountLastActivityAt((prev) => ({ ...prev, [accountId]: activityTime }))
+  }, [])
+
+  const addAccountUnread = useCallback((accountId: string) => {
+    if (!accountId) return
+    setAccountUnreadCounts((prev) => ({
+      ...prev,
+      [accountId]: Math.min((prev[accountId] || 0) + 1, 999),
+    }))
+  }, [])
+
+  const clearAccountUnread = useCallback((accountId: string) => {
+    if (!accountId) return
+    setAccountUnreadCounts((prev) => {
+      if (!prev[accountId]) return prev
+      const next = { ...prev }
+      delete next[accountId]
+      return next
+    })
+  }, [])
+
+  const clearReconnectTimer = useCallback((accountId: string) => {
+    const timer = reconnectTimersRef.current[accountId]
+    if (timer) {
+      clearTimeout(timer)
+      delete reconnectTimersRef.current[accountId]
+    }
+  }, [])
+
+  const scheduleAutoReconnect = useCallback(function schedule(accountId: string, delay = 5000) {
+    if (!accountId || !autoReconnectEnabledRef.current) return
+    if (!wsAccountIdsRef.current.includes(accountId)) return
+    if (reconnectTimersRef.current[accountId] || reconnectingAccountsRef.current.has(accountId)) return
+
+    reconnectTimersRef.current[accountId] = setTimeout(async () => {
+      delete reconnectTimersRef.current[accountId]
+      if (!autoReconnectEnabledRef.current || !wsAccountIdsRef.current.includes(accountId)) return
+
+      reconnectingAccountsRef.current.add(accountId)
+      try {
+        const res = await connectAccount(accountId)
+        if (res.success) {
+          setAccounts((prev) => prev.map((acc) => (
+            acc.account_id === accountId ? { ...acc, connected: true } : acc
+          )))
+          setWsAccountIds((prev) => prev.includes(accountId) ? prev : [...prev, accountId])
+          addToast({ message: `账号 ${accountId} 已自动重连`, type: 'success' })
+        } else {
+          schedule(accountId, 10000)
+        }
+      } catch {
+        schedule(accountId, 10000)
+      } finally {
+        reconnectingAccountsRef.current.delete(accountId)
+      }
+    }, delay)
+  }, [addToast])
+
+  useEffect(() => () => {
+    Object.values(reconnectTimersRef.current).forEach((timer) => clearTimeout(timer))
+    reconnectTimersRef.current = {}
+  }, [])
 
   // ==================== 按账号缓存：切换账号时保留数据 ====================
   /** 每个账号的会话列表缓存 */
@@ -218,7 +374,7 @@ export function ChatNew() {
       cid, rawCid: cid,
       otherUserId: msg.isSelf ? '' : msg.senderId,
       otherUserName: msg.isSelf ? '' : (msg.senderName || ''),
-      otherUserAvatar: '', itemTitle: '',
+      otherUserAvatar: '', buyerCity: '', itemTitle: '',
       lastMessageSummary: summary, lastMessageTime: msg.time,
       unreadCount: isViewing ? 0 : 1,
     }
@@ -236,10 +392,18 @@ export function ChatNew() {
   const handleWsNewMessage = useCallback((accountId: string, cid: string, msg: ChatMessage) => {
     const summary = msg.type === 'image' ? '[图片]' : (msg.text || '').slice(0, 50)
     const isActiveAccount = accountId === activeAccountIdRef.current
+    const isViewingConv = isActiveAccount && cid === activeCidRef.current
+    const isIncoming = !msg.isSelf
+
+    if (isIncoming) {
+      // 左侧账号列表：只要账号收到新消息，就把该账号置顶
+      bumpAccountToTop(accountId, msg.time)
+      // 当前正在查看这个账号的当前会话时，不增加账号级未读；其他情况增加角标
+      if (!isViewingConv) addAccountUnread(accountId)
+    }
 
     if (isActiveAccount) {
       // 活跃账号 → 直接更新 React state
-      const isViewingConv = cid === activeCidRef.current
       setConversations((prev) => updateConvList(prev, cid, summary, msg, isViewingConv))
       if (isViewingConv) {
         setMessages((prev) => appendMsg(prev, msg))
@@ -257,20 +421,31 @@ export function ChatNew() {
         msgCache.msgs = appendMsg(msgCache.msgs, msg)
       }
     }
-  }, [])
+  }, [addAccountUnread, bumpAccountToTop])
 
-  // WebSocket 断连时刷新账号状态（节流：最多每 5 秒刷一次）
+  // WebSocket 断连时刷新账号状态并尝试自动重连（节流：最多每 5 秒刷新一次）
   const lastDisconnectRefreshRef = useRef(0)
-  const handleWsDisconnect = useCallback((_accountId: string) => {
+  const handleWsDisconnect = useCallback((accountId: string, code?: number) => {
+    // 认证失败不要自动重连，避免请求风暴
+    if (code === 4401 || code === 4403) return
+
+    setAccounts((prev) => prev.map((acc) => (
+      acc.account_id === accountId ? { ...acc, connected: false } : acc
+    )))
+    scheduleAutoReconnect(accountId)
+
     const now = Date.now()
     if (now - lastDisconnectRefreshRef.current < 5000) return
     lastDisconnectRefreshRef.current = now
     getChatAccounts(1).then((res) => {
-      setAccounts(res.data)
+      setAccounts(() => {
+        const connectedOverride = new Set(wsAccountIdsRef.current)
+        return res.data.map((acc) => connectedOverride.has(acc.account_id) ? { ...acc, connected: true } : acc)
+      })
       setAccountPage(1)
       setAccountHasMore(res.hasMore)
     }).catch(() => {})
-  }, [])
+  }, [scheduleAutoReconnect])
 
   // 仅为用户手动操作过的已连接账号建立 WebSocket（页面刷新不自动重连）
   useChatNewWs({
@@ -305,6 +480,34 @@ export function ChatNew() {
     }
   }, [loadingAccounts, accountHasMore, accountPage, loadAccounts])
 
+  /** 拉取全部账号，用于一键全部连接（不受当前分页限制） */
+  const loadAllChatAccounts = useCallback(async () => {
+    const all: ChatAccount[] = []
+    let page = 1
+    let hasMore = true
+    while (hasMore && page <= 100) {
+      const res = await getChatAccounts(page, 100)
+      all.push(...res.data)
+      hasMore = !!res.hasMore
+      page += 1
+    }
+    return all
+  }, [])
+
+  // 自动巡检：开启自动重连时，每分钟检查一次已连接账号是否掉线
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!autoReconnectEnabledRef.current || wsAccountIdsRef.current.length === 0) return
+      loadAllChatAccounts().then((all) => {
+        const connectedMap = new Map(all.map((acc) => [acc.account_id, acc.connected]))
+        for (const accountId of wsAccountIdsRef.current) {
+          if (connectedMap.get(accountId) === false) scheduleAutoReconnect(accountId)
+        }
+      }).catch(() => {})
+    }, 60000)
+    return () => clearInterval(timer)
+  }, [loadAllChatAccounts, scheduleAutoReconnect])
+
   useEffect(() => {
     loadAccounts()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -315,8 +518,12 @@ export function ChatNew() {
     try {
       const res = await connectAccount(accountId)
       if (res.success) {
+        clearReconnectTimer(accountId)
         addToast({ message: '连接成功', type: 'success' })
         await loadAccounts()
+        setAccounts((prev) => prev.map((acc) => (
+          acc.account_id === accountId ? { ...acc, connected: true } : acc
+        )))
         setActiveAccountId(accountId)
         setWsAccountIds((prev) => prev.includes(accountId) ? prev : [...prev, accountId])
         // 手机端：连接成功后自动切到"会话"Tab（桌面端不受影响）
@@ -331,11 +538,66 @@ export function ChatNew() {
     }
   }
 
+  const handleConnectAll = async () => {
+    if (connectingAll) return
+    setConnectingAll(true)
+    try {
+      const allAccounts = await loadAllChatAccounts()
+      const targets = allAccounts.filter((acc) => acc.status === 'active' && !acc.connected)
+      if (targets.length === 0) {
+        addToast({ message: '没有需要连接的账号', type: 'info' })
+        return
+      }
+
+      let successCount = 0
+      let failCount = 0
+      const connectedIds: string[] = []
+      for (const acc of targets) {
+        try {
+          const res = await connectAccount(acc.account_id)
+          if (res.success) {
+            successCount += 1
+            connectedIds.push(acc.account_id)
+            clearReconnectTimer(acc.account_id)
+          } else {
+            failCount += 1
+          }
+        } catch {
+          failCount += 1
+        }
+      }
+
+      if (connectedIds.length > 0) {
+        setWsAccountIds((prev) => Array.from(new Set([...prev, ...connectedIds])))
+        setAccounts((prev) => prev.map((acc) => (
+          connectedIds.includes(acc.account_id) ? { ...acc, connected: true } : acc
+        )))
+      }
+      await loadAccounts()
+      addToast({
+        message: failCount > 0 ? `全部连接完成：成功 ${successCount} 个，失败 ${failCount} 个` : `已连接 ${successCount} 个账号`,
+        type: failCount > 0 ? 'warning' : 'success',
+      })
+    } catch (e: any) {
+      addToast({ message: e.message || '一键全部连接失败', type: 'error' })
+    } finally {
+      setConnectingAll(false)
+    }
+  }
+
   const handleDisconnect = async (accountId: string) => {
+    clearReconnectTimer(accountId)
     try {
       await disconnectAccount(accountId)
       addToast({ message: '已断开连接', type: 'success' })
       setWsAccountIds((prev) => prev.filter((id) => id !== accountId))
+      clearAccountUnread(accountId)
+      setAccountLastActivityAt((prev) => {
+        if (!prev[accountId]) return prev
+        const next = { ...prev }
+        delete next[accountId]
+        return next
+      })
       if (activeAccountId === accountId) {
         setActiveAccountId('')
         setConversations([])
@@ -352,6 +614,7 @@ export function ChatNew() {
 
   /** 点击账号卡片：已连接则选中，未连接则自动连接 */
   const handleSelectAccount = async (acc: ChatAccount) => {
+    clearAccountUnread(acc.account_id)
     if (acc.connected) {
       setActiveAccountId(acc.account_id)
       // 选中已连接账号时也建立 WebSocket（页面刷新后首次选中时触发）
@@ -377,6 +640,7 @@ export function ChatNew() {
           if (!cached) return c
           const updates: Partial<Conversation> = {}
           if (cached.avatar && !c.otherUserAvatar) updates.otherUserAvatar = cached.avatar
+          if (cached.city && !c.buyerCity) updates.buyerCity = cached.city
           // 昵称为空或纯数字时用缓存补填
           if (cached.nick && (!c.otherUserName || isPureDigits(c.otherUserName))) updates.otherUserName = cached.nick
           return Object.keys(updates).length > 0 ? { ...c, ...updates } : c
@@ -469,12 +733,12 @@ export function ChatNew() {
   const missingInfoConvs = conversations.filter(
     (c) => {
       if (!c.otherUserId || !c.cid) return false
-      // 昵称有效（非空且非纯数字）且头像存在时无需查询
+      // 昵称有效（非空且非纯数字）且头像存在且城市已拿到时无需查询
       const hasValidName = !!c.otherUserName && !isPureDigits(c.otherUserName)
-      if (c.otherUserAvatar && hasValidName) return false
-      // 缓存中已有完整信息则跳过
+      if (c.otherUserAvatar && hasValidName && c.buyerCity) return false
+      // 缓存中已有完整信息则跳过；如果城市已尝试但取不到，也不反复查询
       const cached = userInfoCacheRef.current[c.otherUserId]
-      if (cached && cached.avatar && cached.nick) return false
+      if (cached && cached.avatar && cached.nick && (cached.city || cached.cityChecked)) return false
       return true
     },
   )
@@ -499,13 +763,15 @@ export function ChatNew() {
     const BATCH_SIZE = 3
     let cancelled = false
 
-    const applyInfos = (infos: Record<string, { avatar: string; nick: string }>) => {
+    const applyInfos = (infos: Record<string, { avatar: string; nick: string; city?: string; cityChecked?: boolean }>) => {
       for (const [uid, info] of Object.entries(infos)) {
-        // 同时缓存 avatar 和 nick
-        const prev = userInfoCacheRef.current[uid] || { avatar: '', nick: '' }
+        // 同时缓存 avatar、nick 和 city
+        const prev = userInfoCacheRef.current[uid] || { avatar: '', nick: '', city: '', cityChecked: false }
         userInfoCacheRef.current[uid] = {
           avatar: info.avatar || prev.avatar,
           nick: info.nick || prev.nick,
+          city: info.city || prev.city,
+          cityChecked: info.cityChecked ?? prev.cityChecked,
         }
       }
       setConversations((prev) =>
@@ -514,6 +780,7 @@ export function ChatNew() {
           if (!info) return c
           const updates: Partial<Conversation> = {}
           if (info.avatar && !c.otherUserAvatar) updates.otherUserAvatar = info.avatar
+          if (info.city && !c.buyerCity) updates.buyerCity = info.city
           // 昵称为空或纯数字时用 API 返回的昵称覆盖
           if (info.nick && (!c.otherUserName || isPureDigits(c.otherUserName))) updates.otherUserName = info.nick
           return Object.keys(updates).length > 0 ? { ...c, ...updates } : c
@@ -569,6 +836,7 @@ export function ChatNew() {
   // 选中会话时：优先从缓存恢复消息，无缓存才加载
   const handleSelectConversation = (cid: string) => {
     setActiveCid(cid)
+    clearAccountUnread(activeAccountId)
     // 手机端：选中会话后切到"聊天"Tab
     setMobileTab('chat')
     // 清零该会话的未读数
@@ -590,6 +858,16 @@ export function ChatNew() {
   }
 
   const activeConversation = conversations.find((c) => c.cid === activeCid)
+  const activeConsultingItem = useMemo(() => {
+    const conv = activeConversation as any
+    const url = String(conv?.consultItemUrl || '').trim()
+    if (!activeCid || !url) return null
+    return {
+      itemId: String(conv?.consultItemId || conv?.itemId || '').trim(),
+      title: String(conv?.consultItemTitle || conv?.itemTitle || '').trim(),
+      url,
+    }
+  }, [activeCid, activeConversation])
 
   useEffect(() => {
     let cancelled = false
@@ -878,6 +1156,22 @@ export function ChatNew() {
     }
   }
 
+  const handleApplyTextVariant = (style: TextVariantStyle) => {
+    if (!inputText.trim()) {
+      addToast({ message: '请先输入要转换的文字', type: 'warning' })
+      return
+    }
+
+    const converted = convertTextVariant(inputText, style)
+    setInputText(converted)
+    setShowVariantPanel(false)
+
+    if (converted === inputText) {
+      addToast({ message: '当前文字没有可转换内容，变体字主要支持英文、数字和常用符号', type: 'info' })
+    }
+  }
+
+
   // ==================== 发送图片 ====================
   const clearPendingImage = useCallback(() => {
     setPendingImage((prev) => {
@@ -1050,11 +1344,25 @@ export function ChatNew() {
   }
 
   // ==================== 渲染 ====================
+  const sortedAccounts = useMemo(() => {
+    return [...accounts].sort((a, b) => {
+      const unreadA = accountUnreadCounts[a.account_id] || 0
+      const unreadB = accountUnreadCounts[b.account_id] || 0
+      if (unreadA > 0 && unreadB === 0) return -1
+      if (unreadB > 0 && unreadA === 0) return 1
+      const activityA = accountLastActivityAt[a.account_id] || 0
+      const activityB = accountLastActivityAt[b.account_id] || 0
+      if (activityA !== activityB) return activityB - activityA
+      return 0
+    })
+  }, [accounts, accountUnreadCounts, accountLastActivityAt])
+
   // 手机端各 Tab 对应未读 / 状态提示
-  const totalUnread = conversations.reduce((sum, c) => sum + (c.unreadCount || 0), 0)
+  const conversationUnread = conversations.reduce((sum, c) => sum + (c.unreadCount || 0), 0)
+  const accountUnreadTotal = Object.values(accountUnreadCounts).reduce((sum, count) => sum + count, 0)
   const tabItems: Array<{ key: MobileTab; label: string; badge?: number; disabled?: boolean }> = [
-    { key: 'accounts', label: '账号' },
-    { key: 'convs', label: '会话', badge: totalUnread, disabled: !activeAccountId },
+    { key: 'accounts', label: '账号', badge: accountUnreadTotal },
+    { key: 'convs', label: '会话', badge: conversationUnread, disabled: !activeAccountId },
     { key: 'chat', label: '聊天', disabled: !activeCid },
     { key: 'tools', label: '工作区', disabled: !activeCid },
   ]
@@ -1091,15 +1399,35 @@ export function ChatNew() {
       <div className="flex flex-1 min-h-0 flex-col md:flex-row gap-3">
       {/* 左侧：账号列表 */}
       <div className={`${mobileTab === 'accounts' ? 'flex' : 'hidden'} md:flex w-full md:w-56 flex-shrink-0 bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 flex-col min-h-0`}>
-        <div className="p-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+        <div className="p-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between gap-2">
           <span className="font-medium text-sm text-gray-700 dark:text-gray-300">账号列表</span>
-          <button
-            onClick={() => loadAccounts()}
-            className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
-            title="刷新"
-          >
-            <RefreshCw className={`w-4 h-4 text-gray-500 ${loadingAccounts ? 'animate-spin' : ''}`} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setAutoReconnectEnabled((prev) => !prev)}
+              className={`px-1.5 py-1 rounded text-[11px] border ${autoReconnectEnabled ? 'border-green-200 text-green-600 bg-green-50 dark:bg-green-900/20 dark:border-green-800' : 'border-gray-200 text-gray-400 dark:border-gray-700'}`}
+              title={autoReconnectEnabled ? '自动重连已开启' : '自动重连已关闭'}
+            >
+              自动
+            </button>
+            <button
+              type="button"
+              onClick={handleConnectAll}
+              disabled={connectingAll}
+              className="inline-flex items-center gap-1 px-1.5 py-1 rounded text-[11px] text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50"
+              title="一键全部连接"
+            >
+              {connectingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LogIn className="w-3.5 h-3.5" />}
+              全连
+            </button>
+            <button
+              onClick={() => loadAccounts()}
+              className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+              title="刷新"
+            >
+              <RefreshCw className={`w-4 h-4 text-gray-500 ${loadingAccounts ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
         </div>
         <div
           ref={accountListRef}
@@ -1119,7 +1447,7 @@ export function ChatNew() {
             <p className="text-center text-sm text-gray-400 py-8">暂无可用账号</p>
           ) : (
             <>
-              {accounts.map((acc) => (
+              {sortedAccounts.map((acc) => (
                 <div
                   key={acc.account_id}
                   className={`p-2 rounded-lg transition-colors text-sm cursor-pointer ${
@@ -1134,9 +1462,16 @@ export function ChatNew() {
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       <User className="w-4 h-4 flex-shrink-0 text-gray-400" />
                       <div className="min-w-0 flex-1">
-                        <span className="block truncate text-gray-700 dark:text-gray-300">
-                          {acc.display_name || acc.remark || acc.account_id}
-                        </span>
+                        <div className="flex items-center gap-1 min-w-0">
+                          <span className="block truncate text-gray-700 dark:text-gray-300">
+                            {acc.display_name || acc.remark || acc.account_id}
+                          </span>
+                          {(accountUnreadCounts[acc.account_id] || 0) > 0 && (
+                            <span className="ml-1 inline-flex min-w-[18px] h-[18px] px-1 items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-semibold leading-none flex-shrink-0">
+                              {accountUnreadCounts[acc.account_id] > 99 ? '99+' : accountUnreadCounts[acc.account_id]}
+                            </span>
+                          )}
+                        </div>
                         {(acc.display_name || acc.remark) && (
                           <span className="block truncate text-xs text-gray-400 dark:text-gray-500">
                             {acc.remark && acc.remark !== acc.display_name ? acc.remark : acc.account_id}
@@ -1259,9 +1594,12 @@ export function ChatNew() {
                     )}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
-                        <span className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">
-                          {conv.otherUserName || conv.otherUserId || '未知用户'}
-                        </span>
+                        <div className="flex items-center gap-1 min-w-0">
+                          <span className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">
+                            {conv.otherUserName || conv.otherUserId || '未知用户'}
+                          </span>
+                          {/* v1.4.2：城市/商品发布地标签已停用 */}
+                        </div>
                         <span className="text-xs text-gray-400 flex-shrink-0 ml-2">
                           {formatTime(conv.lastMessageTime)}
                         </span>
@@ -1454,6 +1792,53 @@ export function ChatNew() {
               >
                 <ImagePlus className="w-4 h-4" />
               </button>
+              <div className="relative flex-shrink-0" ref={variantPanelRef}>
+                <button
+                  type="button"
+                  onClick={() => setShowVariantPanel((prev) => !prev)}
+                  disabled={sending}
+                  title="变体字"
+                  className="flex items-center justify-center w-9 h-9 text-purple-500 dark:text-purple-300 border border-purple-200 dark:border-purple-600 rounded-lg hover:bg-purple-50 dark:hover:bg-purple-900/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Sparkles className="w-4 h-4" />
+                </button>
+                {showVariantPanel && (
+                  <div className="absolute bottom-11 left-0 z-30 w-72 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl overflow-hidden">
+                    <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-700">
+                      <div className="text-sm font-medium text-gray-800 dark:text-gray-100">变体字</div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">先输入文字，再选择样式；主要转换英文、数字和常用符号</div>
+                    </div>
+                    <div className="p-2 grid grid-cols-2 gap-2">
+                      {textVariantOptions.map((option) => (
+                        <button
+                          key={option.key}
+                          type="button"
+                          onClick={() => handleApplyTextVariant(option.key)}
+                          className="text-left rounded-lg border border-gray-100 dark:border-gray-700 px-2 py-2 hover:bg-purple-50 dark:hover:bg-purple-900/30 transition-colors"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-medium text-gray-800 dark:text-gray-100">{option.label}</span>
+                            <span className="text-xs text-purple-500 dark:text-purple-300 truncate">{option.example}</span>
+                          </div>
+                          <div className="mt-1 text-xs text-gray-400 dark:text-gray-500">{option.description}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              {activeConsultingItem?.url && (
+                <a
+                  href={activeConsultingItem.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`打开客户正在咨询的商品：${activeConsultingItem.title || activeConsultingItem.itemId || ''}`}
+                  className="flex-shrink-0 flex items-center gap-1 px-2.5 h-9 text-xs font-medium text-amber-700 dark:text-amber-200 border border-amber-200 dark:border-amber-600 rounded-lg bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/35 transition-colors"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  咨询商品
+                </a>
+              )}
               <textarea
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}

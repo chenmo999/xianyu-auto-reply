@@ -38,6 +38,28 @@ MAX_TOKEN_RETRY = 1
 REQUEST_TIMEOUT = 20
 
 
+
+
+UNAUTHORIZED_ERROR_KEYWORDS = (
+    "FAIL_BIZ_IDLE_USER_UNAUTHORIZED",
+    "无权限访问",
+    "TOP_NOT_SELLER",
+    "TOP_ISVBIZ_NOTALLOW_ACCESS",
+    "NOT_SELLER",
+)
+
+
+def is_offline_permission_error(message: str | None) -> bool:
+    text = str(message or "")
+    return any(keyword in text for keyword in UNAUTHORIZED_ERROR_KEYWORDS)
+
+
+def normalize_offline_error_message(message: str | None) -> str:
+    raw = str(message or "").strip()
+    if is_offline_permission_error(raw):
+        return "账号无下架权限，可能未开通鱼小铺/卖家工具权限，已自动标记为不支持下架"
+    return raw or "下架失败"
+
 async def batch_offline_items_from_xianyu(
     account_id: str,
     cookies_str: str,
@@ -192,13 +214,17 @@ async def batch_offline_items_from_xianyu(
                         }
                     # API返回SUCCESS但data层面失败
                     msg = data.get("msg", "") or str(data)
+                    normalized_msg = normalize_offline_error_message(msg)
+                    unauthorized = is_offline_permission_error(msg)
                     logger.warning(f"【{account_id}】批量下架API返回异常: {msg}")
                     return {
                         "success": False,
-                        "message": msg,
+                        "message": normalized_msg,
+                        "raw_message": msg,
+                        "unauthorized": unauthorized,
                         "suc_count": 0,
                         "fail_count": len(cleaned_ids),
-                        "results": [{"item_id": i, "success": False} for i in cleaned_ids],
+                        "results": [{"item_id": i, "success": False, "message": normalized_msg} for i in cleaned_ids],
                         "cookies_str": cookies_str,
                     }
 
@@ -215,13 +241,17 @@ async def batch_offline_items_from_xianyu(
                     )
 
                 # 其他错误
+                normalized_msg = normalize_offline_error_message(ret_str)
+                unauthorized = is_offline_permission_error(ret_str)
                 logger.warning(f"【{account_id}】批量下架失败: {ret_str}")
                 return {
                     "success": False,
-                    "message": ret_str or "下架失败",
+                    "message": normalized_msg,
+                    "raw_message": ret_str,
+                    "unauthorized": unauthorized,
                     "suc_count": 0,
                     "fail_count": len(cleaned_ids),
-                    "results": [{"item_id": i, "success": False} for i in cleaned_ids],
+                    "results": [{"item_id": i, "success": False, "message": normalized_msg} for i in cleaned_ids],
                     "cookies_str": cookies_str,
                 }
 

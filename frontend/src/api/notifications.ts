@@ -136,6 +136,12 @@ export const setMessageNotification = (cookieId: string, channelId: number, enab
   return post(`${MESSAGE_PREFIX}/${cookieId}`, { channel_id: channelId, enabled })
 }
 
+
+// 批量设置消息通知
+export const setMessageNotificationsBatch = (cookieIds: string[], channelId: number, enabled: boolean): Promise<ApiResponse> => {
+  return post(`${MESSAGE_PREFIX}/batch`, { cookie_ids: cookieIds, channel_id: channelId, enabled })
+}
+
 // 删除消息通知
 export const deleteMessageNotification = (notificationId: string): Promise<ApiResponse> => {
   return del(`${MESSAGE_PREFIX}/${notificationId}`)

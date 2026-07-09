@@ -26,6 +26,10 @@ from common.schemas.account import (
     AccountAiReplyBlockOrderedUsersUpdate,
     AccountConfirmBeforeSendUpdate,
     AccountCookieUpdate,
+    AccountCategoryUpdate,
+    AccountGroupCreate,
+    AccountBatchCategoryUpdate,
+    AccountIdUpdate,
     AccountCreate,
     AccountDeliveryDisabledUpdate,
     AccountDetail,
@@ -35,10 +39,12 @@ from common.schemas.account import (
     AccountPauseDurationUpdate,
     AccountRemarkUpdate,
     AccountReplyDelayUpdate,
+    AccountSortOrderUpdate,
     AccountScheduledRedeliveryUpdate,
     AccountScheduledRateUpdate,
     AccountSendBeforeConfirmUpdate,
     AccountStatusUpdate,
+    AccountOfflineSupportedUpdate,
     DeliveryBlockRulesUpdate,
 )
 from common.schemas.common import ApiResponse
@@ -69,6 +75,42 @@ def _status_to_enabled(status: str | None) -> bool:
         return True
     normalized = status.strip().lower()
     return normalized not in {"inactive", "disabled", "suspended", "deleted"}
+
+
+def _get_offline_supported(account: XYAccount) -> bool:
+    metadata = account.metadata_json if isinstance(account.metadata_json, dict) else {}
+    value = metadata.get("offline_supported")
+    return True if value is None else bool(value)
+
+
+def _get_proxy_status(account: XYAccount) -> dict[str, object]:
+    """账号代理状态。绿色仅代表最近一次代理测试成功；未设置或失败均返回灰色状态。"""
+    proxy_type = (getattr(account, "proxy_type", None) or "none").lower()
+    configured = bool(proxy_type != "none" and getattr(account, "proxy_host", None) and getattr(account, "proxy_port", None))
+    metadata = account.metadata_json if isinstance(account.metadata_json, dict) else {}
+    raw = metadata.get("proxy_status") if isinstance(metadata.get("proxy_status"), dict) else {}
+    if not configured:
+        return {
+            "proxy_type": proxy_type,
+            "proxy_host": getattr(account, "proxy_host", None),
+            "proxy_port": getattr(account, "proxy_port", None),
+            "proxy_configured": False,
+            "proxy_status": "unset",
+            "proxy_message": "未设置代理",
+            "proxy_checked_at": raw.get("checked_at"),
+        }
+    status = str(raw.get("status") or "failed")
+    if status not in {"success", "failed", "unset"}:
+        status = "failed"
+    return {
+        "proxy_type": proxy_type,
+        "proxy_host": getattr(account, "proxy_host", None),
+        "proxy_port": getattr(account, "proxy_port", None),
+        "proxy_configured": True,
+        "proxy_status": status,
+        "proxy_message": str(raw.get("message") or ("代理测试成功" if status == "success" else "代理未测试或测试失败")),
+        "proxy_checked_at": raw.get("checked_at"),
+    }
 
 
 def _normalize_delivery_excluded_items(raw: object) -> list[str]:
@@ -157,6 +199,74 @@ async def list_cookie_options(
     return [AccountOption(**item) for item in options]
 
 
+@router.get("/categories", response_model=ApiResponse)
+async def list_account_categories(
+    current_user: User = Depends(deps.get_current_active_user),
+    account_service: AccountService = Depends(deps.get_account_service),
+) -> ApiResponse:
+    """返回账号分组列表。包含持久化空分组与账号表已有分组。"""
+    owner_id, _ = resolve_owner_scope(current_user)
+    categories = await account_service.list_categories(owner_id)
+    return ApiResponse(success=True, message="账号分组列表", data=categories)
+
+
+@router.post("/categories", response_model=ApiResponse)
+async def create_account_category(
+    payload: AccountGroupCreate,
+    current_user: User = Depends(deps.get_current_active_user),
+    account_service: AccountService = Depends(deps.get_account_service),
+) -> ApiResponse:
+    """新增账号分组。即使分组下面暂时没有账号，也会持久保存。"""
+    owner_id, _ = resolve_owner_scope(current_user)
+    group_owner_id = owner_id if owner_id is not None else current_user.id
+    category = await account_service.create_category(payload.category, group_owner_id)
+    return ApiResponse(success=True, message="账号分组已新增", data={"category": category})
+
+
+@router.delete("/categories/{category}", response_model=ApiResponse)
+async def delete_account_category(
+    category: str,
+    current_user: User = Depends(deps.get_current_active_user),
+    account_service: AccountService = Depends(deps.get_account_service),
+) -> ApiResponse:
+    """删除账号分组。删除后该分组下账号会自动移动到“默认”。"""
+    owner_id, _ = resolve_owner_scope(current_user)
+    group_owner_id = owner_id if owner_id is not None else current_user.id
+    try:
+        result = await account_service.delete_category(category, group_owner_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ApiResponse(
+        success=True,
+        message=f"分组「{result['category']}」已删除，{result['moved_count']} 个账号已移动到默认分组",
+        data=result,
+    )
+
+
+@router.put("/category/batch", response_model=ApiResponse)
+async def update_accounts_category_batch(
+    payload: AccountBatchCategoryUpdate,
+    current_user: User = Depends(deps.get_current_active_user),
+    account_service: AccountService = Depends(deps.get_account_service),
+) -> ApiResponse:
+    """批量移动账号到指定分组。"""
+    owner_id, _ = resolve_owner_scope(current_user)
+    updated_count = await account_service.update_accounts_category(payload.account_ids, payload.category, owner_id)
+    return ApiResponse(success=True, message=f"已移动 {updated_count} 个账号到分组：{payload.category}")
+
+
+@router.put("/sort/order", response_model=ApiResponse)
+async def update_account_sort_order(
+    payload: AccountSortOrderUpdate,
+    current_user: User = Depends(deps.get_current_active_user),
+    account_service: AccountService = Depends(deps.get_account_service),
+) -> ApiResponse:
+    """按前端传入顺序更新账号排序。"""
+    owner_id, _ = resolve_owner_scope(current_user)
+    updated_count = await account_service.update_sort_order(payload.account_ids, owner_id)
+    return ApiResponse(success=True, message=f"账号排序已更新，共更新 {updated_count} 个账号")
+
+
 @router.get("/details", response_model=list[AccountDetail])
 async def list_cookie_details(
     current_user: User = Depends(deps.get_current_active_user),
@@ -188,12 +298,15 @@ async def list_cookie_details(
     
     details: list[AccountDetail] = []
     for account in accounts:
+        proxy_status = _get_proxy_status(account)
         details.append(
             AccountDetail(
                 pk=account.id,  # 数据库主键
                 id=account.account_id,
                 value=account.cookie or "",
                 enabled=_status_to_enabled(account.status),
+                category=getattr(account, "category", None) or "默认",
+                sort_order=getattr(account, "sort_order", None) or 0,
                 auto_confirm=bool(account.auto_confirm),
                 scheduled_redelivery=bool(account.scheduled_redelivery),
                 scheduled_rate=bool(account.scheduled_rate),
@@ -216,6 +329,8 @@ async def list_cookie_details(
                 username=account.username or "",
                 login_password=account.login_password or "",
                 show_browser=bool(account.show_browser),
+                offline_supported=_get_offline_supported(account),
+                **proxy_status,
                 disable_reason=account.disable_reason or "",
                 filter_count=filter_counts.get(account.account_id, 0),
             )
@@ -228,6 +343,7 @@ async def list_cookie_details_paginated(
     page: int = Query(default=1, ge=1, description="页码"),
     page_size: int = Query(default=20, ge=1, le=100, description="每页数量"),
     status: str | None = Query(default=None, description="状态筛选：active/inactive"),
+    category: str | None = Query(default=None, max_length=32, description="账号分类/分组筛选"),
     ai_reply: bool | None = Query(default=None, description="AI回复开关筛选"),
     scheduled_redelivery: bool | None = Query(default=None, description="定时补发货筛选"),
     scheduled_rate: bool | None = Query(default=None, description="定时补评价筛选"),
@@ -271,6 +387,7 @@ async def list_cookie_details_paginated(
         page=page,
         page_size=page_size,
         status=status,
+        category=category,
         ai_reply=ai_reply,
         scheduled_redelivery=scheduled_redelivery,
         scheduled_rate=scheduled_rate,
@@ -330,11 +447,14 @@ async def list_cookie_details_paginated(
     details = []
     for account in accounts:
         ai_settings = (account.metadata_json or {}).get("ai_reply_settings") or {}
+        proxy_status = _get_proxy_status(account)
         details.append({
             "pk": account.id,  # 数据库主键
             "id": account.account_id,
             "value": account.cookie or "",
             "enabled": _status_to_enabled(account.status),
+            "category": getattr(account, "category", None) or "默认",
+            "sort_order": getattr(account, "sort_order", None) or 0,
             "online": account.account_id in online_ids,
             "auto_confirm": bool(account.auto_confirm),
             "scheduled_redelivery": bool(account.scheduled_redelivery),
@@ -358,6 +478,8 @@ async def list_cookie_details_paginated(
             "username": account.username or "",
             "login_password": account.login_password or "",
             "show_browser": bool(account.show_browser),
+            "offline_supported": _get_offline_supported(account),
+            **proxy_status,
             "disable_reason": account.disable_reason or "",
             "filter_count": filter_counts.get(account.account_id, 0),
             "today_reply_count": today_reply_counts.get(account.account_id, 0),
@@ -458,9 +580,15 @@ async def create_account(
     payload: AccountCreate,
     current_user: User = Depends(deps.get_current_active_user),
     account_service: AccountService = Depends(deps.get_account_service),
+    session = Depends(deps.get_db_session),
 ) -> ApiResponse:
     try:
-        account = await account_service.create_account(current_user.id, payload.id, payload.value)
+        account = await account_service.create_account(
+            current_user.id,
+            payload.id,
+            payload.value,
+            category=payload.category,
+        )
         
         # 启动WebSocket任务（通过HTTP调用WebSocket服务）
         from app.services.websocket_client import websocket_client
@@ -492,6 +620,19 @@ async def update_account_cookie(
     return ApiResponse(success=True, message="Cookie 已更新")
 
 
+@router.put("/{account_id}/category", response_model=ApiResponse)
+async def update_account_category(
+    account_id: str,
+    payload: AccountCategoryUpdate,
+    current_user: User = Depends(deps.get_current_active_user),
+    account_service: AccountService = Depends(deps.get_account_service),
+    session = Depends(deps.get_db_session),
+) -> ApiResponse:
+    account = await _get_account_or_404(current_user, account_id, account_service)
+    await account_service.update_category(account, payload.category)
+    return ApiResponse(success=True, message="账号分类已更新")
+
+
 @router.put("/{account_id}/status", response_model=ApiResponse)
 async def update_account_status(
     account_id: str,
@@ -504,6 +645,23 @@ async def update_account_status(
     if not success:
         return ApiResponse(success=False, message=error_message or "账号状态更新失败")
     return ApiResponse(success=True, message="账号状态已更新")
+
+
+@router.put("/{account_id}/offline-supported", response_model=ApiResponse)
+async def update_account_offline_supported(
+    account_id: str,
+    payload: AccountOfflineSupportedUpdate,
+    current_user: User = Depends(deps.get_current_active_user),
+    account_service: AccountService = Depends(deps.get_account_service),
+) -> ApiResponse:
+    """手动标记账号是否支持接口下架/鱼小铺下架权限。"""
+    account = await _get_account_or_404(current_user, account_id, account_service)
+    await account_service.update_offline_supported(account, payload.offline_supported)
+    return ApiResponse(
+        success=True,
+        message=("已标记为支持下架" if payload.offline_supported else "已标记为不支持下架"),
+        data={"offline_supported": bool(payload.offline_supported)},
+    )
 
 
 @router.put("/status/batch", response_model=ApiResponse)
@@ -657,6 +815,33 @@ async def clear_token_cache_batch(
             failed_items.append({"account_id": account_id, "message": f"处理异常: {str(exc)}"})
 
     return _build_batch_operation_response("清除Token缓存并重启", success_ids, failed_items)
+
+
+
+
+@router.put("/{account_id}/account-id", response_model=ApiResponse)
+async def update_account_id(
+    account_id: str,
+    payload: AccountIdUpdate,
+    current_user: User = Depends(deps.get_current_active_user),
+    account_service: AccountService = Depends(deps.get_account_service),
+) -> ApiResponse:
+    """修改账号ID。会同步更新使用 account_id 字符串关联的业务表。"""
+    account = await _get_account_or_404(current_user, account_id, account_service)
+    old_account_id = account.account_id
+    try:
+        new_account_id = await account_service.update_account_id(account, payload.account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # 账号ID变更后，旧 WebSocket 任务名可能仍然存在；尽量停止旧任务。
+    try:
+        from app.services.websocket_client import websocket_client
+        await websocket_client.stop_account(old_account_id)
+    except Exception:
+        pass
+
+    return ApiResponse(success=True, message="账号ID已更新", data={"old_account_id": old_account_id, "account_id": new_account_id})
 
 
 @router.put("/{account_id}/remark", response_model=ApiResponse)

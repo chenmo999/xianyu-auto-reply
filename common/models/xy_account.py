@@ -26,6 +26,7 @@ class XYAccount(TimestampMixin, Base):
         # account_id 全局唯一：闲鱼账号ID不允许重复（业务大量代码仅按 account_id 查询）
         Index("uk_account_id", "account_id", unique=True),
         Index("idx_account_created", "created_at"),
+        Index("idx_account_category_sort", "category", "sort_order"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="账号ID")
@@ -36,6 +37,11 @@ class XYAccount(TimestampMixin, Base):
     cookie: Mapped[str] = mapped_column(Text, nullable=False, comment="Cookie信息")
     login_method: Mapped[str] = mapped_column(String(20), nullable=False, comment="登录方式")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active", comment="账号状态")
+
+    # v1.0.1 新增：账号分类 / 分组
+    category: Mapped[str] = mapped_column(String(32), default="默认", comment="账号分类/分组")
+    # v1.0.2 新增：账号排序，数字越小越靠前；同分组内生效
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, comment="账号排序")
     username: Mapped[str | None] = mapped_column(String(120), comment="登录用户名")
     login_password: Mapped[str | None] = mapped_column(Text, comment="登录密码")
     remark: Mapped[str | None] = mapped_column(String(255), comment="备注")

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, RefreshCw, QrCode, Key, Edit2, Trash2, Power, PowerOff, X, Loader2, Clock, CheckCircle, MessageSquare, Bot, Globe, Timer, ScanFace, ChevronLeft, ChevronRight, ChevronDown, ImagePlus, Filter, Repeat, MoreHorizontal, PackageCheck, Star, ShieldCheck, Flower2, Eye, EyeOff, Ban, Download, Upload, Send } from 'lucide-react'
-import { getAccountDetailsPaginated, deleteAccount, updateAccountCookie, updateAccountStatus, updateAccountsStatusBatch, closeAccountsNoticeBatch, clearTokenCacheBatch, updateAccountRemark, addAccount, generateQRLogin, checkQRLoginStatus, passwordLogin, checkPasswordLoginStatus, updateAccountAutoConfirm, updateAccountPauseDuration, updateAccountMessageExpireTime, updateAccountReplyDelay, updateAccountLoginInfo, updateAccountScheduledRedelivery, updateAccountScheduledRate, updateAccountAutoPolish, updateAccountConfirmBeforeSend, updateAccountSendBeforeConfirm, updateAccountAutoRedFlower, updateAccountAiReplyBlockOrderedUsers, getAIReplySettings, updateAIReplySettings, testAIConnection, fetchAIModels, AI_PROVIDER_OPTIONS, AI_PROVIDER_DEFAULT_BASE_URLS, getProxyConfig, updateProxyConfig, getFaceVerificationScreenshot, deleteFaceVerificationScreenshot, getConfirmReceiptMessage, updateConfirmReceiptMessage, uploadConfirmReceiptImage, exportAccountsExcel, importAccountsExcel, type AIProviderType, type AIModelOption, type ProxyConfig, type FaceVerificationScreenshot, type AccountFilterParams } from '@/api/accounts'
+import { Plus, RefreshCw, QrCode, Key, Edit2, Trash2, Power, PowerOff, X, Loader2, Clock, CheckCircle, MessageSquare, Bot, Globe, Timer, ScanFace, ChevronLeft, ChevronRight, ChevronDown, ArrowUp, ArrowDown, ImagePlus, Filter, Repeat, MoreHorizontal, PackageCheck, PackageX, Star, ShieldCheck, Flower2, Eye, EyeOff, Ban, Download, Upload, Send, Save } from 'lucide-react'
+import { getAccountDetailsPaginated, deleteAccount, updateAccountCookie, updateAccountStatus, updateAccountOfflineSupported, updateAccountsStatusBatch, closeAccountsNoticeBatch, clearTokenCacheBatch, updateAccountRemark, updateAccountId, updateAccountCategory, getAccountCategories, createAccountCategory, deleteAccountCategory, updateAccountsCategoryBatch, updateAccountSortOrder, addAccount, generateQRLogin, checkQRLoginStatus, passwordLogin, checkPasswordLoginStatus, updateAccountAutoConfirm, updateAccountPauseDuration, updateAccountMessageExpireTime, updateAccountReplyDelay, updateAccountLoginInfo, updateAccountScheduledRedelivery, updateAccountScheduledRate, updateAccountAutoPolish, updateAccountConfirmBeforeSend, updateAccountSendBeforeConfirm, updateAccountAutoRedFlower, updateAccountAiReplyBlockOrderedUsers, getAIReplySettings, updateAIReplySettings, testAIConnection, fetchAIModels, AI_PROVIDER_OPTIONS, AI_PROVIDER_DEFAULT_BASE_URLS, getProxyConfig, updateProxyConfig, testProxyConfig, getFaceVerificationScreenshot, deleteFaceVerificationScreenshot, getConfirmReceiptMessage, updateConfirmReceiptMessage, uploadConfirmReceiptImage, exportAccountsExcel, importAccountsExcel, type AIProviderType, type AIModelOption, type ProxyConfig, type FaceVerificationScreenshot, type AccountFilterParams } from '@/api/accounts'
 import { getDefaultReply, updateDefaultReply, uploadDefaultReplyImage } from '@/api/keywords'
 import { getAutoRateConfig, updateAutoRateConfig } from '@/api/autoRate'
 import { checkAdminDefaultPassword } from '@/api/auth'
@@ -21,6 +21,8 @@ type ModalType = 'qrcode' | 'password' | 'manual' | 'edit' | 'default-reply' | '
 interface AccountWithKeywordCount extends AccountDetail {
   keywordCount?: number
   aiEnabled?: boolean
+  category?: string
+  sort_order?: number
 }
 
 interface AccountPagination {
@@ -33,6 +35,7 @@ interface AccountPagination {
 // 筛选状态类型
 interface AccountFilters {
   status: 'active' | 'inactive' | null
+  category: string | null
   ai_reply: boolean | null
   scheduled_redelivery: boolean | null
   scheduled_rate: boolean | null
@@ -70,6 +73,41 @@ const getAIConfigIncompleteMessage = (missingItems: string[]): string => (
   `AI配置未填写完整，请先补全：${missingItems.join('、')}`
 )
 
+const DEFAULT_ACCOUNT_CATEGORIES = ['默认']
+
+const normalizeAccountCategory = (category?: string | null): string => {
+  const normalized = (category || '默认').trim()
+  return normalized || '默认'
+}
+
+const mergeAccountCategories = (...groups: Array<Array<string | undefined | null>>): string[] => {
+  const result: string[] = []
+  for (const category of DEFAULT_ACCOUNT_CATEGORIES) {
+    if (!result.includes(category)) result.push(category)
+  }
+  for (const group of groups) {
+    for (const item of group) {
+      const normalized = normalizeAccountCategory(item)
+      if (!result.includes(normalized)) result.push(normalized)
+    }
+  }
+  return result
+}
+
+const getAccountCategoryClass = (category?: string): string => {
+  const normalizedCategory = category || '默认'
+  switch (normalizedCategory) {
+    case '工作':
+      return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+    case '私人':
+      return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+    case '测试':
+      return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+    default:
+      return 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+  }
+}
+
 export function Accounts() {
   const { addToast } = useUIStore()
   const { isAuthenticated, token, user, _hasHydrated } = useAuthStore()
@@ -89,6 +127,7 @@ export function Accounts() {
   // 筛选状态
   const [filters, setFilters] = useState<AccountFilters>({
     status: null,
+    category: null,
     ai_reply: null,
     scheduled_redelivery: null,
     scheduled_rate: null,
@@ -99,6 +138,14 @@ export function Accounts() {
     disable_reason: null,
     account_id: null,
   })
+  const [accountCategories, setAccountCategories] = useState<string[]>(DEFAULT_ACCOUNT_CATEGORIES)
+  const [newAccountCategory, setNewAccountCategory] = useState('')
+  const [categoryCreating, setCategoryCreating] = useState(false)
+  const [categoryDeleting, setCategoryDeleting] = useState<string | null>(null)
+  const [batchMoveCategory, setBatchMoveCategory] = useState('默认')
+  const [batchMoveLoading, setBatchMoveLoading] = useState(false)
+  const [sortDirty, setSortDirty] = useState(false)
+  const [sortSaving, setSortSaving] = useState(false)
   const [showFilters, setShowFilters] = useState(false)
   // 「禁用原因」筛选输入框的本地草稿：输入过程不触发接口，回车/失焦/点击查询按钮时提交
   const [disableReasonInput, setDisableReasonInput] = useState('')
@@ -144,15 +191,18 @@ export function Accounts() {
   // 手动输入状态
   const [manualAccountId, setManualAccountId] = useState('')
   const [manualCookie, setManualCookie] = useState('')
+  const [manualCategory, setManualCategory] = useState('默认')
   const [manualLoading, setManualLoading] = useState(false)
 
   // 编辑账号状态
   const [editingAccount, setEditingAccount] = useState<AccountDetail | null>(null)
+  const [editAccountId, setEditAccountId] = useState('')
   const [editNote, setEditNote] = useState('')
   const [editCookie, setEditCookie] = useState('')
   const [, setEditAutoConfirm] = useState(false)
   const [editPauseDuration, setEditPauseDuration] = useState(0)
   const [editUsername, setEditUsername] = useState('')
+  const [editCategory, setEditCategory] = useState('默认')
   const [editPassword, setEditPassword] = useState('')
   const [editPasswordVisible, setEditPasswordVisible] = useState(false)
   const [editShowBrowser, setEditShowBrowser] = useState(false)
@@ -191,6 +241,7 @@ export function Accounts() {
   const [proxyPass, setProxyPass] = useState('')
   const [proxySettingsLoading, setProxySettingsLoading] = useState(false)
   const [proxySettingsSaving, setProxySettingsSaving] = useState(false)
+  const [proxyTestingAccountIds, setProxyTestingAccountIds] = useState<Set<string>>(new Set())
 
   // 消息等待时间设置状态
   const [messageExpireTimeAccount, setMessageExpireTimeAccount] = useState<AccountWithKeywordCount | null>(null)
@@ -253,6 +304,7 @@ export function Accounts() {
       // 构建筛选参数
       const filterParams: AccountFilterParams = {}
       if (currentFilters.status) filterParams.status = currentFilters.status
+      if (currentFilters.category) filterParams.category = currentFilters.category
       if (currentFilters.ai_reply !== null) filterParams.ai_reply = currentFilters.ai_reply
       if (currentFilters.scheduled_redelivery !== null) filterParams.scheduled_redelivery = currentFilters.scheduled_redelivery
       if (currentFilters.scheduled_rate !== null) filterParams.scheduled_rate = currentFilters.scheduled_rate
@@ -270,6 +322,8 @@ export function Accounts() {
       const result = await getAccountDetailsPaginated(page, pageSize, filterParams)
 
       setAccounts(result.data)
+      setSortDirty(false)
+      setAccountCategories(prev => mergeAccountCategories(prev, result.data.map(account => account.category)))
       setSelectedAccountIds(prev => prev.filter(accountId => result.data.some(account => account.id === accountId)))
       setPagination({
         page: result.page,
@@ -309,6 +363,7 @@ export function Accounts() {
   const handleResetFilters = () => {
     const emptyFilters: AccountFilters = {
       status: null,
+      category: null,
       ai_reply: null,
       scheduled_redelivery: null,
       scheduled_rate: null,
@@ -378,8 +433,143 @@ export function Accounts() {
     ))
   }
 
+  const loadAccountCategories = async () => {
+    if (!_hasHydrated || !isAuthenticated || !token) return
+    try {
+      const categories = await getAccountCategories()
+      setAccountCategories(prev => mergeAccountCategories(prev, categories))
+    } catch {
+      // 分组列表加载失败不影响账号列表使用
+    }
+  }
+
+  const handleCreateAccountCategory = async () => {
+    const category = normalizeAccountCategory(newAccountCategory)
+    if (!category) {
+      addToast({ type: 'warning', message: '请输入分组名称' })
+      return
+    }
+    if (accountCategories.includes(category)) {
+      addToast({ type: 'info', message: '分组已存在' })
+      setNewAccountCategory('')
+      handleFilterChange('category', category)
+      return
+    }
+
+    setCategoryCreating(true)
+    try {
+      const createdCategory = await createAccountCategory(category)
+      const normalizedCategory = normalizeAccountCategory(createdCategory)
+      setAccountCategories(prev => mergeAccountCategories(prev, [normalizedCategory]))
+      setNewAccountCategory('')
+      setBatchMoveCategory(normalizedCategory)
+      handleFilterChange('category', normalizedCategory)
+      addToast({ type: 'success', message: `分组「${normalizedCategory}」已新增` })
+    } catch (error) {
+      addToast({ type: 'error', message: getApiErrorMessage(error, '新增分组失败') })
+    } finally {
+      setCategoryCreating(false)
+    }
+  }
+
+  const handleDeleteAccountCategory = async (category: string) => {
+    const normalizedCategory = normalizeAccountCategory(category)
+    if (normalizedCategory === '默认') {
+      addToast({ type: 'warning', message: '默认分组不能删除' })
+      return
+    }
+
+    const ok = window.confirm(`确定删除分组「${normalizedCategory}」吗？该分组下的账号会自动移动到「默认」。`)
+    if (!ok) return
+
+    setCategoryDeleting(normalizedCategory)
+    try {
+      const result = await deleteAccountCategory(normalizedCategory)
+      const movedCount = result.data?.moved_count ?? 0
+      setAccountCategories(prev => mergeAccountCategories(prev.filter(item => item !== normalizedCategory)))
+      if (filters.category === normalizedCategory) {
+        setFilters(prev => ({ ...prev, category: null }))
+        await loadAccounts(1, pagination.pageSize, { ...filters, category: null })
+      } else {
+        await loadAccounts(pagination.page, pagination.pageSize, filters)
+      }
+      await loadAccountCategories()
+      addToast({ type: 'success', message: `分组「${normalizedCategory}」已删除，${movedCount} 个账号已移动到默认分组` })
+    } catch (error) {
+      addToast({ type: 'error', message: getApiErrorMessage(error, '删除分组失败') })
+    } finally {
+      setCategoryDeleting(null)
+    }
+  }
+
+  const handleBatchMoveAccountCategory = async () => {
+    const category = normalizeAccountCategory(batchMoveCategory)
+    if (selectedAccountIds.length === 0) {
+      addToast({ type: 'warning', message: '请先勾选账号' })
+      return
+    }
+    if (!category) {
+      addToast({ type: 'warning', message: '请选择或输入目标分组' })
+      return
+    }
+
+    setBatchMoveLoading(true)
+    try {
+      await updateAccountsCategoryBatch(selectedAccountIds, category)
+      setAccountCategories(prev => mergeAccountCategories(prev, [category]))
+      setSelectedAccountIds([])
+      addToast({ type: 'success', message: `已移动 ${selectedAccountIds.length} 个账号到「${category}」` })
+      await loadAccountCategories()
+      await loadAccounts(1, pagination.pageSize, { ...filters, category })
+      setFilters(prev => ({ ...prev, category }))
+    } catch (error) {
+      addToast({ type: 'error', message: getApiErrorMessage(error, '批量移动分组失败') })
+    } finally {
+      setBatchMoveLoading(false)
+    }
+  }
+
+  const handleMoveAccountSort = (index: number, direction: -1 | 1) => {
+    const targetIndex = index + direction
+    if (targetIndex < 0 || targetIndex >= accounts.length) return
+
+    const current = accounts[index]
+    const target = accounts[targetIndex]
+    if (!current || !target) return
+
+    // 只调整当前页面显示顺序，不立即请求后端。
+    // 调整完后点击“保存排序”一次性写入数据库。
+    const nextAccounts = [...accounts]
+    ;[nextAccounts[index], nextAccounts[targetIndex]] = [nextAccounts[targetIndex], nextAccounts[index]]
+    setAccounts(nextAccounts)
+    setSortDirty(true)
+  }
+
+  const handleSaveAccountSort = async () => {
+    if (!sortDirty || accounts.length === 0) return
+
+    setSortSaving(true)
+    try {
+      await updateAccountSortOrder(accounts.map(account => account.id))
+      setSortDirty(false)
+      addToast({ type: 'success', message: '账号排序已保存' })
+      await loadAccounts(pagination.page, pagination.pageSize, filters)
+    } catch {
+      addToast({ type: 'error', message: '账号排序保存失败' })
+    } finally {
+      setSortSaving(false)
+    }
+  }
+
+  const handleResetAccountSort = async () => {
+    if (!sortDirty) return
+    await loadAccounts(pagination.page, pagination.pageSize, filters)
+    addToast({ type: 'success', message: '已撤销未保存的排序调整' })
+  }
+
   useEffect(() => {
     if (!_hasHydrated || !isAuthenticated || !token) return
+    loadAccountCategories()
     loadAccounts()
   }, [_hasHydrated, isAuthenticated, token])
 
@@ -418,7 +608,9 @@ export function Accounts() {
     setPwdScreenshotPath('')
     setManualAccountId('')
     setManualCookie('')
+    setManualCategory('默认')
     setManualLoading(false)
+    setEditCategory('默认')
     setEditPasswordVisible(false)
     setAiTimeRangeStart('')
     setAiTimeRangeEnd('')
@@ -655,12 +847,14 @@ export function Accounts() {
       const result = await addAccount({
         id: manualAccountId.trim(),
         cookie: manualCookie.trim(),
+        category: manualCategory,
       })
       // 后端返回 {msg: 'success'} 或 {success: true}
       if (result.success || result.msg === 'success') {
         addToast({ type: 'success', message: '账号添加成功' })
         closeModal()
-        loadAccounts()
+        // 新增账号默认置顶，添加成功后回到第一页，方便马上看到新账号
+        loadAccounts(1, pagination.pageSize, filters)
       } else {
         addToast({ type: 'error', message: result.message || result.detail || '添加失败' })
       }
@@ -921,11 +1115,13 @@ export function Accounts() {
   // ==================== 编辑账号 ====================
   const openEditModal = (account: AccountDetail) => {
     setEditingAccount(account)
+    setEditAccountId(account.id || '')
     setEditNote(account.note || '')
     setEditCookie(account.cookie || '')
     setEditAutoConfirm(account.auto_confirm || false)
     setEditPauseDuration(account.pause_duration || 0)
     setEditUsername(account.username || '')
+    setEditCategory(account.category || '默认')
     setEditPassword(account.login_password || '')
     setEditShowBrowser(account.show_browser || false)
     setActiveModal('edit')
@@ -935,24 +1131,42 @@ export function Accounts() {
     e.preventDefault()
     if (!editingAccount) return
 
+    const normalizedEditAccountId = editAccountId.trim()
+    if (!normalizedEditAccountId) {
+      addToast({ type: 'warning', message: '新的账号ID不能为空' })
+      return
+    }
+
     setEditSaving(true)
     try {
-      // 分别调用不同的 API 更新不同字段
+      // 账号ID修改必须先执行；后续接口要使用新的账号ID，否则会找不到账号。
+      let targetAccountId = editingAccount.id
+      if (normalizedEditAccountId !== editingAccount.id) {
+        await updateAccountId(editingAccount.id, normalizedEditAccountId)
+        targetAccountId = normalizedEditAccountId
+      }
+
+      // 其余字段可以并发更新
       const promises: Promise<unknown>[] = []
 
       // 更新备注
       if (editNote.trim() !== (editingAccount.note || '')) {
-        promises.push(updateAccountRemark(editingAccount.id, editNote.trim()))
+        promises.push(updateAccountRemark(targetAccountId, editNote.trim()))
+      }
+
+      // 更新账号分组
+      if (editCategory !== (editingAccount.category || '默认')) {
+        promises.push(updateAccountCategory(targetAccountId, editCategory))
       }
 
       // 更新 Cookie 值
       if (editCookie.trim() && editCookie.trim() !== editingAccount.cookie) {
-        promises.push(updateAccountCookie(editingAccount.id, editCookie.trim()))
+        promises.push(updateAccountCookie(targetAccountId, editCookie.trim()))
       }
 
       // 更新暂停时间
       if (editPauseDuration !== (editingAccount.pause_duration || 0)) {
-        promises.push(updateAccountPauseDuration(editingAccount.id, editPauseDuration))
+        promises.push(updateAccountPauseDuration(targetAccountId, editPauseDuration))
       }
 
       // 更新登录信息（用户名、密码、显示浏览器）
@@ -962,7 +1176,7 @@ export function Accounts() {
         editShowBrowser !== (editingAccount.show_browser || false)
       
       if (loginInfoChanged) {
-        promises.push(updateAccountLoginInfo(editingAccount.id, {
+        promises.push(updateAccountLoginInfo(targetAccountId, {
           username: editUsername,
           login_password: editPassword,
           show_browser: editShowBrowser,
@@ -1029,7 +1243,8 @@ export function Accounts() {
       if (result.success) {
         addToast({ type: 'success', message: '默认回复已保存' })
         closeModal()
-        loadAccounts() // 刷新账号列表
+        // 新增账号默认置顶，添加成功后回到第一页，方便马上看到新账号
+        loadAccounts(1, pagination.pageSize, filters) // 刷新账号列表
       } else {
         addToast({ type: 'error', message: result.message || '保存失败' })
       }
@@ -1214,6 +1429,25 @@ export function Accounts() {
       addToast({ type: 'success', message: `已下单用户禁止AI回复已${newEnabled ? '开启' : '关闭'}` })
     } catch (error) {
       addToast({ type: 'error', message: getApiErrorMessage(error, '更新已下单用户禁止AI回复开关失败') })
+    }
+  }
+
+  // ==================== 下架权限 / 鱼小铺标记 ====================
+  const handleToggleOfflineSupported = async (account: AccountWithKeywordCount) => {
+    const newEnabled = !(account.offline_supported ?? true)
+    setAccounts(prev => prev.map(a => (a.id === account.id ? { ...a, offline_supported: newEnabled } : a)))
+    try {
+      const result = await updateAccountOfflineSupported(account.id, newEnabled)
+      if (result.success === false) {
+        throw new Error(result.message || '更新失败')
+      }
+      addToast({
+        type: 'success',
+        message: newEnabled ? '已标记为支持接口下架/鱼小铺账号' : '已标记为不支持接口下架',
+      })
+    } catch {
+      setAccounts(prev => prev.map(a => (a.id === account.id ? { ...a, offline_supported: !newEnabled } : a)))
+      addToast({ type: 'error', message: '下架权限标记更新失败' })
     }
   }
 
@@ -1425,6 +1659,53 @@ export function Accounts() {
   }
 
   // ==================== 代理设置管理 ====================
+  const getProxyStatusTitle = (account: AccountWithKeywordCount): string => {
+    if (proxyTestingAccountIds.has(account.id)) return '代理测试中...'
+    if (!account.proxy_configured) return '代理：未设置（点击打开代理设置）'
+    if (account.proxy_status === 'success') {
+      return `代理成功：${account.proxy_message || '测试通过'}（点击重新测试）`
+    }
+    return `代理未通过：${account.proxy_message || '未测试或测试失败'}（点击重新测试）`
+  }
+
+  const getProxyStatusButtonClass = (account: AccountWithKeywordCount): string => {
+    if (account.proxy_configured && account.proxy_status === 'success') {
+      return 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:hover:bg-emerald-900/50'
+    }
+    return 'bg-slate-100 text-slate-400 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-500 dark:hover:bg-slate-600'
+  }
+
+  const handleTestProxyStatus = async (account: AccountWithKeywordCount) => {
+    if (!account.proxy_configured) {
+      addToast({ type: 'warning', message: '该账号未设置代理，请先在“更多 → 代理设置”里填写代理' })
+      openProxySettings(account)
+      return
+    }
+    setProxyTestingAccountIds(prev => new Set(prev).add(account.id))
+    try {
+      const result = await testProxyConfig(account.id)
+      const nextStatus = {
+        proxy_configured: result.data?.proxy_configured ?? true,
+        proxy_status: result.data?.proxy_status || (result.success ? 'success' : 'failed'),
+        proxy_message: result.data?.proxy_message || result.message || (result.success ? '代理测试成功' : '代理测试失败'),
+        proxy_checked_at: result.data?.proxy_checked_at || null,
+      }
+      setAccounts(prev => prev.map(a => (a.id === account.id ? { ...a, ...nextStatus } : a)))
+      addToast({
+        type: result.success ? 'success' : 'error',
+        message: result.message || (result.success ? '代理测试成功' : '代理测试失败'),
+      })
+    } catch (error) {
+      addToast({ type: 'error', message: getApiErrorMessage(error, '代理测试失败') })
+    } finally {
+      setProxyTestingAccountIds(prev => {
+        const next = new Set(prev)
+        next.delete(account.id)
+        return next
+      })
+    }
+  }
+
   const openProxySettings = async (account: AccountWithKeywordCount) => {
     setProxySettingsAccount(account)
     setActiveModal('proxy-settings')
@@ -1478,8 +1759,21 @@ export function Accounts() {
       }
       const result = await updateProxyConfig(proxySettingsAccount.id, config)
       if (result.success) {
-        addToast({ type: 'success', message: '代理配置已保存' })
+        if (result.data) {
+          setAccounts(prev => prev.map(a => (a.id === proxySettingsAccount.id ? {
+            ...a,
+            proxy_type: result.data?.proxy_type || 'none',
+            proxy_host: result.data?.proxy_host || null,
+            proxy_port: result.data?.proxy_port || null,
+            proxy_configured: result.data?.proxy_configured || false,
+            proxy_status: result.data?.proxy_status || 'unset',
+            proxy_message: result.data?.proxy_message || null,
+            proxy_checked_at: result.data?.proxy_checked_at || null,
+          } : a)))
+        }
+        addToast({ type: result.message?.includes('测试失败') ? 'warning' : 'success', message: result.message || '代理配置已保存' })
         closeModal()
+        await loadAccounts()
       } else {
         addToast({ type: 'error', message: result.message || '保存失败' })
       }
@@ -1518,7 +1812,8 @@ export function Accounts() {
       if (result.success) {
         addToast({ type: 'success', message: '相同消息等待时间已保存' })
         closeModal()
-        loadAccounts()
+        // 新增账号默认置顶，添加成功后回到第一页，方便马上看到新账号
+        loadAccounts(1, pagination.pageSize, filters)
       } else {
         addToast({ type: 'error', message: result.message || '保存失败' })
       }
@@ -1545,7 +1840,8 @@ export function Accounts() {
       if (result.success) {
         addToast({ type: 'success', message: '自动回复延迟时间已保存' })
         closeModal()
-        loadAccounts()
+        // 新增账号默认置顶，添加成功后回到第一页，方便马上看到新账号
+        loadAccounts(1, pagination.pageSize, filters)
       } else {
         addToast({ type: 'error', message: result.message || '保存失败' })
       }
@@ -1743,6 +2039,12 @@ export function Accounts() {
 
   return (
     <div className="space-y-4">
+      <datalist id="account-category-options">
+        {accountCategories.map(category => (
+          <option key={category} value={category} />
+        ))}
+      </datalist>
+
       {/* Header */}
       <div className="page-header flex-between">
         <div>
@@ -1753,6 +2055,113 @@ export function Accounts() {
           <RefreshCw className="w-4 h-4" />
           刷新
         </button>
+      </div>
+
+      {/* 账号分组管理 */}
+      <div className="vben-card">
+        <div className="vben-card-header">
+          <h2 className="vben-card-title">
+            <PackageCheck className="w-4 h-4" />
+            账号分组
+          </h2>
+          <span className="text-xs text-slate-500 dark:text-slate-400">新增分组、按分组筛选、批量移动账号</span>
+        </div>
+        <div className="vben-card-body space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-slate-500 dark:text-slate-400 mr-1">分组筛选：</span>
+            <button
+              type="button"
+              onClick={() => handleFilterChange('category', null)}
+              className={`px-3 py-1.5 text-sm rounded-full border transition-colors ${!filters.category ? 'bg-blue-600 text-white border-blue-600' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-300'}`}
+            >
+              全部
+            </button>
+            {accountCategories.map(category => {
+              const canDeleteCategory = category !== '默认'
+              return (
+                <div
+                  key={category}
+                  className={`inline-flex items-center overflow-hidden rounded-full border transition-colors ${filters.category === category ? 'bg-blue-600 text-white border-blue-600' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-300'}`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => handleFilterChange('category', category)}
+                    className="px-3 py-1.5 text-sm"
+                  >
+                    {category}
+                  </button>
+                  {canDeleteCategory && (
+                    <button
+                      type="button"
+                      title={`删除分组「${category}」`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleDeleteAccountCategory(category)
+                      }}
+                      disabled={categoryDeleting === category}
+                      className={`px-2 py-1.5 border-l text-sm transition-colors ${filters.category === category ? 'border-blue-500 text-white/90 hover:bg-blue-700' : 'border-slate-200 dark:border-slate-700 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20'} disabled:opacity-50 disabled:cursor-not-allowed`}
+                    >
+                      {categoryDeleting === category ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800/60">
+              <span className="text-sm font-medium text-slate-700 dark:text-slate-200">新增分组</span>
+              <input
+                type="text"
+                list="account-category-options"
+                value={newAccountCategory}
+                onChange={(e) => setNewAccountCategory(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleCreateAccountCategory()
+                  }
+                }}
+                className="input-ios flex-1 min-w-[160px]"
+                placeholder="例如：主号 / 备用号 / 直播号"
+              />
+              <button
+                type="button"
+                onClick={handleCreateAccountCategory}
+                disabled={categoryCreating || !newAccountCategory.trim()}
+                className="btn-ios-primary disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {categoryCreating ? '新增中...' : '新增分组'}
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800/60">
+              <span className="text-sm font-medium text-slate-700 dark:text-slate-200">批量移动</span>
+              <select
+                value={batchMoveCategory}
+                onChange={(e) => setBatchMoveCategory(e.target.value)}
+                className="input-ios flex-1 min-w-[140px]"
+              >
+                {accountCategories.map(category => (
+                  <option key={category} value={category}>{category}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleBatchMoveAccountCategory}
+                disabled={selectedCount === 0 || batchMoveLoading}
+                className="btn-ios-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {batchMoveLoading ? '移动中...' : `移动已选${selectedCount ? `(${selectedCount})` : ''}`}
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Add Account Card */}
@@ -1959,6 +2368,20 @@ export function Accounts() {
                   <option value="inactive">禁用</option>
                 </select>
               </div>
+                            {/* 分组筛选 */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-gray-500 dark:text-gray-400">账号分组</label>
+                <select
+                  value={filters.category || ''}
+                  onChange={(e) => handleFilterChange('category', e.target.value || null)}
+                  className="px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">全部</option>
+                  {accountCategories.map(category => (
+                    <option key={category} value={category}>{category}</option>
+                  ))}
+                </select>
+              </div>
               
               {/* AI回复筛选 */}
               <div className="flex flex-col gap-1">
@@ -2120,6 +2543,35 @@ export function Accounts() {
             </div>
           </div>
         )}
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800/80">
+          <div className="flex flex-col">
+            <span className="font-medium text-slate-700 dark:text-slate-200">账号排序</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400">上移/下移只调整页面顺序，全部排好后再点击保存排序。</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {sortDirty && (
+              <span className="text-xs text-amber-600 dark:text-amber-300">有未保存的排序调整</span>
+            )}
+            <button
+              type="button"
+              onClick={handleResetAccountSort}
+              disabled={!sortDirty || sortSaving || accountsLoading}
+              className="btn-ios-secondary btn-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              撤销调整
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveAccountSort}
+              disabled={!sortDirty || sortSaving || accountsLoading}
+              className="btn-ios-primary btn-sm flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {sortSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              保存排序
+            </button>
+          </div>
+        </div>
+
         <div className="flex-1 overflow-x-auto overflow-y-auto scrollbar-visible">
           {accountsLoading ? (
             <div className="flex justify-center py-8">
@@ -2138,7 +2590,9 @@ export function Accounts() {
                       className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed"
                     />
                   </th>
+                  <th className="whitespace-nowrap min-w-[90px]">排序</th>
                   <th className="whitespace-nowrap min-w-[180px]">账号ID</th>
+                  <th className="whitespace-nowrap min-w-[90px]">分组</th>
                   {isAdmin && <th className="whitespace-nowrap min-w-[120px]">所属用户</th>}
                   <th className="whitespace-nowrap min-w-[80px]">关键词</th>
                   <th className="whitespace-nowrap min-w-[80px]">过滤词</th>
@@ -2154,14 +2608,14 @@ export function Accounts() {
               <tbody>
                 {accounts.length === 0 ? (
                   <tr>
-                    <td colSpan={isAdmin ? 12 : 11}>
+                    <td colSpan={isAdmin ? 14 : 13}>
                       <div className="empty-state py-8">
                         <p className="text-slate-500 dark:text-slate-400">暂无账号，请添加新账号</p>
                       </div>
                     </td>
                   </tr>
                 ) : (
-                  accounts.map((account) => (
+                  accounts.map((account, index) => (
                   <tr key={account.id}>
                     <td className="w-12">
                       <input
@@ -2171,8 +2625,35 @@ export function Accounts() {
                         className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                       />
                     </td>
+                    <td>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleMoveAccountSort(index, -1)}
+                          disabled={index === 0 || accountsLoading || sortSaving}
+                          className="inline-flex items-center justify-center w-7 h-7 rounded border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-blue-600 hover:border-blue-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                          title="上移"
+                        >
+                          <ArrowUp className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleMoveAccountSort(index, 1)}
+                          disabled={index === accounts.length - 1 || accountsLoading || sortSaving}
+                          className="inline-flex items-center justify-center w-7 h-7 rounded border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-blue-600 hover:border-blue-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                          title="下移"
+                        >
+                          <ArrowDown className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </td>
                     <td className="font-medium text-blue-600 dark:text-blue-400">
                       {account.note ? `${account.id} (${account.note})` : account.id}
+                    </td>
+                    <td>
+                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getAccountCategoryClass(account.category)}`}>
+                        {account.category || '默认'}
+                      </span>
                     </td>
                     {isAdmin && (
                       <td className="text-sm text-slate-600 dark:text-slate-400 whitespace-nowrap">
@@ -2275,7 +2756,20 @@ export function Accounts() {
                         >
                           <Star className="w-3.5 h-3.5" />
                         </button>
-                        {/* 商品擦亮 */}
+                        {/* 代理状态：绿色=最近一次测试成功；灰色=未设置或测试失败 */}
+                        <button
+                          onClick={() => handleTestProxyStatus(account)}
+                          className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${getProxyStatusButtonClass(account)}`}
+                          title={getProxyStatusTitle(account)}
+                          disabled={proxyTestingAccountIds.has(account.id)}
+                        >
+                          {proxyTestingAccountIds.has(account.id) ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Globe className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                        {/* 商品自动擦亮 */}
                         <button
                           onClick={() => handleToggleAutoPolish(account)}
                           className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${
@@ -2286,6 +2780,18 @@ export function Accounts() {
                           title={`商品自动擦亮：${account.auto_polish ? '已开启（点击关闭）' : '已关闭（点击开启）'}`}
                         >
                           <RefreshCw className="w-3.5 h-3.5" />
+                        </button>
+                        {/* 下架权限 / 鱼小铺标记 */}
+                        <button
+                          onClick={() => handleToggleOfflineSupported(account)}
+                          className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${
+                            account.offline_supported !== false
+                              ? 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-300 dark:hover:bg-lime-900/50'
+                              : 'bg-red-100 text-red-600 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/50'
+                          }`}
+                          title={`下架权限/鱼小铺：${account.offline_supported !== false ? '支持接口下架（点击标记为不支持）' : '不支持接口下架（点击标记为支持）'}`}
+                        >
+                          <PackageX className="w-3.5 h-3.5" />
                         </button>
                         {/* 自动确认发货 */}
                         <button
@@ -2766,6 +3272,17 @@ export function Accounts() {
                   />
                 </div>
                 <div className="input-group">
+                  <label className="input-label">账号分组</label>
+                  <input
+                    type="text"
+                    list="account-category-options"
+                    value={manualCategory}
+                    onChange={(e) => setManualCategory(e.target.value)}
+                    className="input-ios"
+                    placeholder="可输入新分组，如：直播号/主号/备用号"
+                  />
+                </div>
+                <div className="input-group">
                   <label className="input-label">Cookie</label>
                   <textarea
                     value={manualCookie}
@@ -2814,10 +3331,14 @@ export function Accounts() {
                   <label className="input-label">账号ID</label>
                   <input
                     type="text"
-                    value={editingAccount.id}
-                    disabled
-                    className="input-ios bg-slate-100 dark:bg-slate-700"
+                    value={editAccountId}
+                    onChange={(e) => setEditAccountId(e.target.value)}
+                    className="input-ios"
+                    placeholder="请输入新的账号ID"
                   />
+                  <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                    修改账号ID会同步更新关联数据；保存后需要用新账号ID进行后续筛选和操作。
+                  </p>
                 </div>
                 <div className="input-group">
                   <label className="input-label">备注</label>
@@ -2827,6 +3348,17 @@ export function Accounts() {
                     onChange={(e) => setEditNote(e.target.value)}
                     className="input-ios"
                     placeholder="添加备注信息"
+                  />
+                </div>
+                <div className="input-group">
+                  <label className="input-label">账号分组</label>
+                  <input
+                    type="text"
+                    list="account-category-options"
+                    value={editCategory}
+                    onChange={(e) => setEditCategory(e.target.value)}
+                    className="input-ios"
+                    placeholder="可输入新分组，如：直播号/主号/备用号"
                   />
                 </div>
                 <div className="input-group">
@@ -3502,7 +4034,7 @@ export function Accounts() {
                       value={aiCustomPrompts}
                       onChange={(e) => setAiCustomPrompts(e.target.value)}
                       className="input-ios h-24 resize-none font-mono text-xs"
-                      placeholder='{"classify": "分类提示词", "price": "议价提示词", "tech": "技术提示词", "default": "默认提示词"}'
+                      placeholder='{"classify": "分组提示词", "price": "议价提示词", "tech": "技术提示词", "default": "默认提示词"}'
                     />
                     <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                       留空使用系统默认提示词
@@ -3686,6 +4218,7 @@ export function Accounts() {
                     <ul className="space-y-0.5 list-disc list-inside">
                       <li>代理用于WebSocket连接和API请求</li>
                       <li>SOCKS5代理支持更好，推荐使用</li>
+                      <li>保存代理后会自动测试代理连通性，账号列表里的代理图标会同步变绿/变灰</li>
                       <li>修改代理后需要重启账号监听才能生效</li>
                     </ul>
                   </div>

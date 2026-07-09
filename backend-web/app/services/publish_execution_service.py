@@ -230,7 +230,7 @@ class PublishExecutorService:
         materials: List[dict],
         batch_id: str = None,
     ) -> Dict[str, Any]:
-        """批量发布（多账号×多商品，每账号复用同一浏览器实例）"""
+        """批量发布（多账号×多商品，每账号复用同一浏览器实例，支持手动停止）"""
         if not batch_id:
             batch_id = str(uuid.uuid4())
         log_svc = PublishLogService(self.session)
@@ -245,7 +245,29 @@ class PublishExecutorService:
 
         account_map = await self._get_account_map(account_ids, user_id)
 
+        async def _cancelled() -> bool:
+            return await PublishBatchStatusService.is_cancelled(batch_id)
+
+        async def _mark_log_stopped(log_id: int | None) -> None:
+            if log_id:
+                await log_svc.update_log(
+                    log_id=log_id,
+                    status="failed",
+                    error_message="批量发布已手动停止",
+                )
+
+        batch_stopped = False
+
         for account_id in account_ids:
+            if await _cancelled():
+                batch_stopped = True
+                await PublishBatchStatusService.mark_account_sync_skipped(
+                    batch_id=batch_id,
+                    account_id=account_id,
+                    message="批量发布已手动停止，未继续发布该账号",
+                )
+                break
+
             account = account_map.get(account_id)
             cookies_str = account.cookie if account and account.cookie else ""
             if not cookies_str:
@@ -276,6 +298,15 @@ class PublishExecutorService:
             publisher = create_xianyu_publisher(static_root=STATIC_ROOT)
             try:
                 for idx, material in enumerate(materials):
+                    if await _cancelled():
+                        batch_stopped = True
+                        await PublishBatchStatusService.mark_account_sync_skipped(
+                            batch_id=batch_id,
+                            account_id=account_id,
+                            message="批量发布已手动停止，未继续发布该账号剩余商品",
+                        )
+                        break
+
                     try:
                         resolved_address = await address_svc.resolve_publish_address(account_id, material, queue_state)
                     except ValueError as address_error:
@@ -310,12 +341,39 @@ class PublishExecutorService:
 
                     try:
                         reuse = idx > 0
-                        result = await publisher.publish_item(
-                            item_data=publish_material,
-                            cookie_data={"cookie": cookies_str},
-                            reuse_browser=reuse,
-                            should_close=False,
+                        publish_task = asyncio.create_task(
+                            publisher.publish_item(
+                                item_data=publish_material,
+                                cookie_data={"cookie": cookies_str},
+                                reuse_browser=reuse,
+                                should_close=False,
+                            )
                         )
+
+                        while not publish_task.done():
+                            if await _cancelled():
+                                batch_stopped = True
+                                publish_task.cancel()
+                                try:
+                                    await publish_task
+                                except asyncio.CancelledError:
+                                    pass
+                                await _mark_log_stopped(log.id)
+                                failed_count += 1
+                                logger.warning(
+                                    f"批量发布已手动停止: batch_id={batch_id}, account={account_id}, title={material.get('title')}"
+                                )
+                                try:
+                                    await publisher.close()
+                                except Exception:
+                                    pass
+                                break
+                            await asyncio.sleep(1)
+
+                        if batch_stopped:
+                            break
+
+                        result = await publish_task
 
                         if result.get("success"):
                             success_count += 1
@@ -335,18 +393,49 @@ class PublishExecutorService:
                             )
 
                         if idx < len(materials) - 1:
-                            await asyncio.sleep(3)
+                            # 账号内商品间隔也支持快速响应停止
+                            for _ in range(3):
+                                if await _cancelled():
+                                    batch_stopped = True
+                                    break
+                                await asyncio.sleep(1)
+                            if batch_stopped:
+                                break
 
+                    except asyncio.CancelledError:
+                        batch_stopped = True
+                        await _mark_log_stopped(log.id)
+                        failed_count += 1
+                        break
                     except Exception as exc:
                         failed_count += 1
                         logger.error(f"批量发布单品异常: account={account_id}, title={material.get('title')}: {exc}")
                         await log_svc.update_log(log_id=log.id, status="failed", error_message=str(exc))
 
             finally:
-                await publisher.close()
+                try:
+                    await publisher.close()
+                except Exception:
+                    pass
+
+            if batch_stopped:
+                await PublishBatchStatusService.mark_account_sync_skipped(
+                    batch_id=batch_id,
+                    account_id=account_id,
+                    message="批量发布已手动停止，未继续自动获取商品",
+                )
+                break
 
             if account_success_count > 0 and account is not None:
                 try:
+                    if await _cancelled():
+                        batch_stopped = True
+                        await PublishBatchStatusService.mark_account_sync_skipped(
+                            batch_id=batch_id,
+                            account_id=account_id,
+                            message="批量发布已手动停止，未继续自动获取商品",
+                        )
+                        break
                     await PublishBatchStatusService.mark_account_sync_running(
                         batch_id=batch_id,
                         account_id=account_id,
@@ -374,7 +463,10 @@ class PublishExecutorService:
                     message="该账号没有发布成功的商品，未触发自动获取商品",
                 )
 
-        logger.info(f"批量发布结束: batch_id={batch_id}, 成功={success_count}, 失败={failed_count}")
+        if batch_stopped:
+            logger.info(f"批量发布已手动停止: batch_id={batch_id}, 已成功={success_count}, 已失败={failed_count}")
+        else:
+            logger.info(f"批量发布结束: batch_id={batch_id}, 成功={success_count}, 失败={failed_count}")
 
         return {
             "success": True,
@@ -382,6 +474,7 @@ class PublishExecutorService:
             "total": total,
             "success_count": success_count,
             "failed_count": failed_count,
+            "cancelled": batch_stopped,
             "log_ids": log_ids,
         }
 

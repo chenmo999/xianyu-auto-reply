@@ -117,6 +117,8 @@ export interface BatchStatusResponse {
     publishing: number
     pending: number
     finished: boolean
+    cancelled?: boolean
+    cancel_message?: string | null
     account_statuses: BatchAccountStatus[]
   }
 }
@@ -180,6 +182,51 @@ export const deleteMaterial = (id: number): Promise<ApiResponse> =>
 export const batchDeleteMaterials = (ids: number[]): Promise<ApiResponse> =>
   post(`${PREFIX}/materials/batch-delete`, { ids })
 
+
+const buildMaterialExportQuery = (filters?: { title?: string; category?: string; condition?: string }) => {
+  const params = new URLSearchParams()
+  if (filters?.title) params.append('title', filters.title)
+  if (filters?.category) params.append('category', filters.category)
+  if (filters?.condition) params.append('condition', filters.condition)
+  return params
+}
+
+/** 导出素材库 Excel */
+export const exportMaterials = async (filters?: { title?: string; category?: string; condition?: string }): Promise<Blob> => {
+  const params = buildMaterialExportQuery(filters)
+  const token = localStorage.getItem('auth_token')
+  const response = await fetch(`${PREFIX}/materials/export${params.toString() ? `?${params}` : ''}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  })
+  if (!response.ok) throw new Error('导出失败')
+  return response.blob()
+}
+
+/** 导出素材库原图 ZIP：materials.xlsx + images/ */
+export const exportMaterialsWithImages = async (filters?: { title?: string; category?: string; condition?: string }): Promise<Blob> => {
+  const params = buildMaterialExportQuery(filters)
+  const token = localStorage.getItem('auth_token')
+  const response = await fetch(`${PREFIX}/materials/export-with-images${params.toString() ? `?${params}` : ''}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  })
+  if (!response.ok) throw new Error('导出原图失败')
+  return response.blob()
+}
+
+/** 导入素材库 Excel，可同时上传 images 文件夹原图 */
+export const importMaterials = async (
+  file: File,
+  imageFiles?: File[]
+): Promise<ApiResponse<{ created: number; failed: number; matched_images?: number; errors?: Array<{ row: number; reason: string }> }>> => {
+  const formData = new FormData()
+  formData.append('file', file)
+  ;(imageFiles || []).forEach(f => {
+    const relativePath = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name
+    formData.append('image_files', f, relativePath)
+  })
+  return post(`${PREFIX}/materials/import`, formData)
+}
+
 // ==================== 发布接口 ====================
 
 /** 单品发布（同步，超时时间需设长） */
@@ -208,6 +255,10 @@ export const publishBatch = (params: {
 /** 查询批量发布任务状态 */
 export const getBatchStatus = (batchId: string): Promise<BatchStatusResponse> =>
   get(`${PREFIX}/publish/batch/${batchId}/status`)
+
+/** 停止正在执行的批量发布任务 */
+export const cancelBatchPublish = (batchId: string): Promise<ApiResponse<{ batch_id: string }>> =>
+  post(`${PREFIX}/publish/batch/${batchId}/cancel`, {})
 
 // ==================== 图片上传 ====================
 

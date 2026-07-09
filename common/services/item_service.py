@@ -109,7 +109,7 @@ class ItemService:
         keyword: str | None = None,
         is_polished: bool | None = None,
         is_multi_spec: bool | None = None,
-        multi_quantity_delivery: bool | None = None,
+        multi_quantity_delivery: bool | None = None
     ) -> tuple[list[dict], int]:
         """获取商品列表（分页），支持多条件筛选
         
@@ -181,6 +181,7 @@ class ItemService:
                         XYCatalogItem.metadata_json["multi_quantity_delivery"].is_(None)
                     )
                 )
+
         
         if conditions:
             base_stmt = base_stmt.where(and_(*conditions))

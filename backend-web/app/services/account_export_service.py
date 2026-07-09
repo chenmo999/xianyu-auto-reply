@@ -156,6 +156,8 @@ class AccountExportService:
                 stmt = stmt.where(XYAccount.status == filters["status"])
             if filters.get("account_id"):
                 stmt = stmt.where(XYAccount.account_id.like(f"%{filters['account_id']}%"))
+            if filters.get("category"):
+                stmt = stmt.where(XYAccount.category == filters["category"])
             if filters.get("has_password") is True:
                 stmt = stmt.where(XYAccount.login_password.is_not(None))
                 stmt = stmt.where(XYAccount.login_password != "")
@@ -219,14 +221,15 @@ class AccountExportService:
 
     def _write_account_basic(self, wb: Workbook, accounts: list[XYAccount]) -> None:
         headers = [
-            "账号ID", "备注", "用户名", "登录密码", "Cookie", "状态", "禁用原因",
+            "账号ID", "账号分类", "备注", "用户名", "登录密码", "Cookie", "状态", "禁用原因",
             "暂停时长(秒)", "相同消息等待时间(秒)", "显示浏览器",
             "代理类型", "代理地址", "代理端口", "代理用户名", "代理密码",
         ]
         rows = []
         for acc in accounts:
             rows.append([
-                acc.account_id, acc.remark, acc.username, acc.login_password,
+                acc.account_id, getattr(acc, "category", None) or "默认",
+                acc.remark, acc.username, acc.login_password,
                 acc.cookie, acc.status, acc.disable_reason,
                 acc.pause_duration, acc.message_expire_time, acc.show_browser,
                 acc.proxy_type, acc.proxy_host, acc.proxy_port, acc.proxy_user, acc.proxy_pass,

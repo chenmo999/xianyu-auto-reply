@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 商品素材库页面
  *
  * 功能：
@@ -8,12 +8,12 @@
  * 4. 勾选批量删除
  * 5. 素材用于单品发布和批量发布
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { Plus, Pencil, Trash2, RefreshCw, Image, ChevronLeft, ChevronRight, Search, X } from 'lucide-react'
+import { Plus, Pencil, Trash2, RefreshCw, Image, ChevronLeft, ChevronRight, Search, X, Download, Upload } from 'lucide-react'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
-import { getMaterials, deleteMaterial, batchDeleteMaterials, type ProductMaterial } from '@/api/productPublish'
+import { getMaterials, deleteMaterial, batchDeleteMaterials, exportMaterials, exportMaterialsWithImages, importMaterials, type ProductMaterial } from '@/api/productPublish'
 import { PageLoading } from '@/components/common/Loading'
 import { ConfirmModal } from '@/components/common/ConfirmModal'
 import { MaterialFormModal } from './MaterialFormModal'
@@ -46,6 +46,12 @@ export function ProductMaterials() {
   const [selectedIds, setSelectedIds] = useState<number[]>([])
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false)
   const [batchDeleting, setBatchDeleting] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [exportingImages, setExportingImages] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [pendingImportFile, setPendingImportFile] = useState<File | null>(null)
+  const importInputRef = useRef<HTMLInputElement | null>(null)
+  const imageFolderInputRef = useRef<HTMLInputElement | null>(null)
 
   /** 加载素材列表 */
   const load = async (p = page, size = pageSize) => {
@@ -149,6 +155,122 @@ export function ProductMaterials() {
     }
   }
 
+  /** 导出素材库 */
+  const handleExportMaterials = async () => {
+    setExporting(true)
+    try {
+      const filters: { title?: string; category?: string; condition?: string } = {}
+      if (filterTitle.trim()) filters.title = filterTitle.trim()
+      if (filterCategory) filters.category = filterCategory
+      if (filterCondition) filters.condition = filterCondition
+      const blob = await exportMaterials(Object.keys(filters).length > 0 ? filters : undefined)
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `商品素材库_${new Date().toISOString().slice(0, 10)}.xlsx`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.URL.revokeObjectURL(url)
+      addToast({ type: 'success', message: '素材库导出成功' })
+    } catch {
+      addToast({ type: 'error', message: '素材库导出失败' })
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  /** 导出素材库原图 ZIP */
+  const handleExportMaterialsWithImages = async () => {
+    setExportingImages(true)
+    try {
+      const filters: { title?: string; category?: string; condition?: string } = {}
+      if (filterTitle.trim()) filters.title = filterTitle.trim()
+      if (filterCategory) filters.category = filterCategory
+      if (filterCondition) filters.condition = filterCondition
+      const blob = await exportMaterialsWithImages(Object.keys(filters).length > 0 ? filters : undefined)
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `商品素材库_含原图_${new Date().toISOString().slice(0, 10)}.zip`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.URL.revokeObjectURL(url)
+      addToast({ type: 'success', message: '素材库原图 ZIP 导出成功' })
+    } catch {
+      addToast({ type: 'error', message: '素材库原图导出失败' })
+    } finally {
+      setExportingImages(false)
+    }
+  }
+
+  /** 选择导入 Excel */
+  const handleChooseImportExcel = (file: File | null) => {
+    if (!file) return
+    const ok = file.name.toLowerCase().endsWith('.xlsx') || file.name.toLowerCase().endsWith('.xls')
+    if (!ok) {
+      addToast({ type: 'warning', message: '请上传 Excel 文件（.xlsx 或 .xls）' })
+      return
+    }
+    setPendingImportFile(file)
+    addToast({ type: 'success', message: 'Excel 已选择，请继续选择 images 文件夹，或点“仅导入Excel”' })
+    if (importInputRef.current) importInputRef.current.value = ''
+  }
+
+  /** 打开 images 文件夹选择器 */
+  const openImageFolderPicker = () => {
+    if (!pendingImportFile) {
+      addToast({ type: 'warning', message: '请先选择 Excel 文件' })
+      importInputRef.current?.click()
+      return
+    }
+    const input = imageFolderInputRef.current
+    if (!input) return
+    // Chrome/Edge 支持 webkitdirectory，可选择整个 images 文件夹。
+    input.setAttribute('webkitdirectory', '')
+    input.setAttribute('directory', '')
+    input.click()
+  }
+
+  /** 执行导入素材库 */
+  const doImportMaterials = async (file: File, imageFiles?: File[]) => {
+    setImporting(true)
+    try {
+      const res = await importMaterials(file, imageFiles)
+      if (res.success) {
+        const created = res.data?.created ?? 0
+        const failed = res.data?.failed ?? 0
+        const matched = res.data?.matched_images ?? 0
+        const fallbackMessage = `导入完成：成功 ${created} 条${matched ? `，匹配图片 ${matched} 张` : ''}${failed ? `，失败 ${failed} 条` : ''}`
+        addToast({ type: failed ? 'warning' : 'success', message: res.message || fallbackMessage })
+        setPendingImportFile(null)
+        setPage(1)
+        setSelectedIds([])
+        load(1, pageSize)
+      } else {
+        addToast({ type: 'error', message: res.message || '导入失败' })
+      }
+    } catch {
+      addToast({ type: 'error', message: '导入失败，请检查 Excel 和 images 文件夹是否匹配' })
+    } finally {
+      setImporting(false)
+      if (imageFolderInputRef.current) imageFolderInputRef.current.value = ''
+    }
+  }
+
+  /** 选择 images 文件夹后导入 */
+  const handleChooseImageFolderAndImport = async (files: FileList | null) => {
+    if (!pendingImportFile) return
+    const imageFiles = Array.from(files || []).filter(f => f.type.startsWith('image/') || /\.(jpe?g|png|gif|webp|bmp)$/i.test(f.name))
+    if (imageFiles.length === 0) {
+      addToast({ type: 'warning', message: 'images 文件夹里没有找到图片，将仅导入 Excel' })
+      await doImportMaterials(pendingImportFile)
+      return
+    }
+    await doImportMaterials(pendingImportFile, imageFiles)
+  }
+
   /** 全选/取消全选当前页 */
   const handleSelectAll = () => {
     if (materials.length === 0) return
@@ -188,6 +310,43 @@ export function ProductMaterials() {
               <Trash2 className="w-4 h-4" />批量删除 ({selectedIds.length})
             </button>
           )}
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".xlsx,.xls"
+            className="hidden"
+            onChange={e => handleChooseImportExcel(e.target.files?.[0] || null)}
+          />
+          <input
+            ref={imageFolderInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={e => handleChooseImageFolderAndImport(e.target.files)}
+          />
+          {!pendingImportFile ? (
+            <button className="btn-ios-secondary" onClick={() => importInputRef.current?.click()} disabled={importing}>
+              <Upload className={`w-4 h-4 ${importing ? 'animate-pulse' : ''}`} />{importing ? '导入中...' : '导入'}
+            </button>
+          ) : (
+            <>
+              <button className="btn-ios-secondary" onClick={openImageFolderPicker} disabled={importing} title={`已选择：${pendingImportFile.name}`}>
+                <Upload className={`w-4 h-4 ${importing ? 'animate-pulse' : ''}`} />{importing ? '导入中...' : '选择images并导入'}
+              </button>
+              <button className="btn-ios-secondary" onClick={() => pendingImportFile && doImportMaterials(pendingImportFile)} disabled={importing}>
+                仅导入Excel
+              </button>
+              <button className="btn-ios-secondary" onClick={() => setPendingImportFile(null)} disabled={importing}>
+                取消
+              </button>
+            </>
+          )}
+          <button className="btn-ios-secondary" onClick={handleExportMaterialsWithImages} disabled={exportingImages}>
+            <Image className={`w-4 h-4 ${exportingImages ? 'animate-pulse' : ''}`} />{exportingImages ? '导出中...' : '导出'}
+          </button>
+          <button className="btn-ios-secondary" onClick={handleExportMaterials} disabled={exporting} title="只导出 Excel，不包含原图">
+            <Download className={`w-4 h-4 ${exporting ? 'animate-pulse' : ''}`} />{exporting ? '导出中...' : '仅导Excel'}
+          </button>
           <button className="btn-ios-secondary" onClick={() => load(page, pageSize)} disabled={tableLoading}>
             <RefreshCw className={`w-4 h-4 ${tableLoading ? 'animate-spin' : ''}`} />刷新
           </button>

@@ -49,6 +49,8 @@ export interface Conversation {
   otherUserId: string
   otherUserName: string
   otherUserAvatar: string
+  /** 买家城市标签，由后端从闲鱼用户信息中尽量提取 */
+  buyerCity?: string
   itemTitle: string
   lastMessageSummary: string
   lastMessageTime: number
@@ -155,6 +157,10 @@ export const sendImageMessage = async (
 export interface UserInfoResult {
   avatar: string
   nick: string
+  /** 买家城市，接口能取到时返回；取不到为空 */
+  city?: string
+  /** 是否已经尝试过查询城市，避免前端反复请求 */
+  cityChecked?: boolean
 }
 
 /** 批量查询对方用户信息（头像+昵称，需要传会话ID用于调API） */

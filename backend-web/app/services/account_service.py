@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, update, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.services.account_limit_service import AccountLimitService
@@ -22,11 +22,180 @@ from common.utils.cookie_refresh import clear_cookie_refresh_snapshot
 UTC = timezone.utc
 
 
+def _normalize_account_category(category: str | None) -> str:
+    """归一化账号分类，避免写入空字符串。"""
+    normalized = (category or "默认").strip()
+    return normalized or "默认"
+
+
+def _get_offline_supported_from_metadata(metadata: dict | None) -> bool:
+    """读取账号下架权限标记。
+
+    默认 True：避免升级后误拦截历史上能正常下架的鱼小铺账号。
+    一旦闲鱼返回无权限，后端会自动写入 False。
+    """
+    if not isinstance(metadata, dict):
+        return True
+    value = metadata.get("offline_supported")
+    if value is None:
+        return True
+    return bool(value)
+
+
 class AccountService:
     """Provides access to legacy cookie account records."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    async def _next_sort_order(self, category: str, owner_id: int | None = None) -> int:
+        """获取指定分组下一个排序值，用于移动到分组末尾。"""
+        normalized_category = _normalize_account_category(category)
+        stmt = select(func.coalesce(func.max(XYAccount.sort_order), 0)).where(
+            XYAccount.category == normalized_category
+        )
+        if owner_id is not None:
+            stmt = stmt.where(XYAccount.owner_id == owner_id)
+        result = await self.session.execute(stmt)
+        return int(result.scalar() or 0) + 1
+
+    async def _top_sort_order(self, category: str, owner_id: int | None = None) -> int:
+        """获取指定分组顶部排序值，用于新账号默认置顶。
+
+        账号列表按 sort_order 升序展示，因此新账号取当前最小值 - 1，
+        就能稳定排到该分组顶部，不影响用户已保存的账号顺序。
+        """
+        normalized_category = _normalize_account_category(category)
+        stmt = select(func.coalesce(func.min(XYAccount.sort_order), 0)).where(
+            XYAccount.category == normalized_category
+        )
+        if owner_id is not None:
+            stmt = stmt.where(XYAccount.owner_id == owner_id)
+        result = await self.session.execute(stmt)
+        return int(result.scalar() or 0) - 1
+
+    async def list_categories(self, owner_id: int | None = None) -> list[str]:
+        """返回账号分组列表。
+
+        v1.0.2.1：优先读取持久化分组表 xy_account_groups，同时兼容账号表里已有的 category。
+        这样即使新分组下面暂时没有账号，刷新页面后分组也不会消失。
+        """
+        categories: list[str] = []
+
+        def append_category(value: str | None) -> None:
+            normalized = _normalize_account_category(value)
+            if normalized not in categories:
+                categories.append(normalized)
+
+        # 只固定保留“默认”。其他分组从数据库读取，可新增也可删除。
+        append_category("默认")
+
+        # 读取持久化分组表。兼容未执行 SQL 的情况：失败时不影响账号列表。
+        try:
+            if owner_id is None:
+                group_sql = text("""
+                    SELECT DISTINCT name
+                    FROM xy_account_groups
+                    WHERE name IS NOT NULL AND name <> ''
+                    ORDER BY sort_order ASC, name ASC
+                """)
+                group_result = await self.session.execute(group_sql)
+            else:
+                group_sql = text("""
+                    SELECT DISTINCT name
+                    FROM xy_account_groups
+                    WHERE owner_id = :owner_id AND name IS NOT NULL AND name <> ''
+                    ORDER BY sort_order ASC, name ASC
+                """)
+                group_result = await self.session.execute(group_sql, {"owner_id": owner_id})
+            for row in group_result.fetchall():
+                append_category(row[0])
+        except Exception:
+            pass
+
+        # 兼容历史数据：账号表里已存在的 category 也要显示。
+        stmt = select(XYAccount.category).distinct().order_by(XYAccount.category)
+        if owner_id is not None:
+            stmt = stmt.where(XYAccount.owner_id == owner_id)
+        result = await self.session.execute(stmt)
+        for item in result.scalars().all():
+            append_category(item)
+
+        return categories
+
+    async def create_category(self, category: str, owner_id: int) -> str:
+        """创建持久化账号分组。已存在时直接复用。"""
+        normalized = _normalize_account_category(category)
+        # MySQL 8 / MariaDB 均支持 ON DUPLICATE KEY UPDATE
+        sql = text("""
+            INSERT INTO xy_account_groups (owner_id, name, sort_order)
+            VALUES (
+                :owner_id,
+                :name,
+                COALESCE((
+                    SELECT max_sort FROM (
+                        SELECT MAX(sort_order) AS max_sort
+                        FROM xy_account_groups
+                        WHERE owner_id = :owner_id_for_sort
+                    ) AS t
+                ), 0) + 1
+            )
+            ON DUPLICATE KEY UPDATE name = VALUES(name)
+        """)
+        await self.session.execute(sql, {
+            "owner_id": owner_id,
+            "owner_id_for_sort": owner_id,
+            "name": normalized,
+        })
+        await self.session.commit()
+        return normalized
+
+
+    async def delete_category(self, category: str, owner_id: int) -> dict:
+        """删除账号分组。
+
+        为避免账号丢失，删除分组时会把该分组下的账号移动到“默认”。
+        “默认”分组不可删除。
+        """
+        normalized = _normalize_account_category(category)
+        if normalized == "默认":
+            raise ValueError("默认分组不能删除")
+
+        # 确保默认分组存在
+        await self.create_category("默认", owner_id)
+
+        update_stmt = (
+            update(XYAccount)
+            .where(XYAccount.category == normalized)
+            .values(category="默认", sort_order=0)
+        )
+        if owner_id is not None:
+            update_stmt = update_stmt.where(XYAccount.owner_id == owner_id)
+        update_result = await self.session.execute(update_stmt)
+
+        delete_sql = text("""
+            DELETE FROM xy_account_groups
+            WHERE owner_id = :owner_id AND name = :name
+        """)
+        delete_result = await self.session.execute(delete_sql, {"owner_id": owner_id, "name": normalized})
+        await self.session.commit()
+
+        return {
+            "category": normalized,
+            "moved_count": int(update_result.rowcount or 0),
+            "deleted_count": int(delete_result.rowcount or 0),
+        }
+
+    async def ensure_category(self, category: str, owner_id: int | None = None) -> str:
+        """确保分组名称存在；owner_id 为空时仅做归一化。"""
+        normalized = _normalize_account_category(category)
+        if owner_id is not None:
+            try:
+                await self.create_category(normalized, owner_id)
+            except Exception:
+                # 分组表异常不影响账号主流程
+                await self.session.rollback()
+        return normalized
 
     async def list_account_options(self, owner_id: int | None = None) -> list[dict]:
         stmt = select(
@@ -35,7 +204,10 @@ class AccountService:
             XYAccount.remark,
             XYAccount.status,
             XYAccount.show_browser,
-        ).order_by(XYAccount.account_id)
+            XYAccount.metadata_json,
+            XYAccount.category,
+            XYAccount.sort_order,
+        ).order_by(XYAccount.category, XYAccount.sort_order, XYAccount.account_id)
         if owner_id is not None:
             stmt = stmt.where(XYAccount.owner_id == owner_id)
         result = await self.session.execute(stmt)
@@ -46,13 +218,16 @@ class AccountService:
                 "remark": row.remark or "",
                 "enabled": (row.status or "active").strip().lower() not in {"inactive", "disabled", "suspended", "deleted"},
                 "show_browser": bool(row.show_browser),
+                "offline_supported": _get_offline_supported_from_metadata(row.metadata_json),
+                "category": row.category or "默认",
+                "sort_order": row.sort_order or 0,
             }
             for row in result.all()
         ]
 
     async def list_account_ids(self, owner_id: int | None = None) -> list[str]:
         """获取账号ID列表，owner_id为None时返回所有账号（管理员）"""
-        stmt = select(XYAccount.account_id).order_by(XYAccount.account_id)
+        stmt = select(XYAccount.account_id).order_by(XYAccount.category, XYAccount.sort_order, XYAccount.account_id)
         if owner_id is not None:
             stmt = stmt.where(XYAccount.owner_id == owner_id)
         result = await self.session.execute(stmt)
@@ -60,7 +235,7 @@ class AccountService:
 
     async def list_accounts(self, owner_id: int | None = None) -> list[XYAccount]:
         """获取账号列表，owner_id为None时返回所有账号（管理员）"""
-        stmt = select(XYAccount).order_by(XYAccount.account_id)
+        stmt = select(XYAccount).order_by(XYAccount.category, XYAccount.sort_order, XYAccount.account_id)
         if owner_id is not None:
             stmt = stmt.where(XYAccount.owner_id == owner_id)
         result = await self.session.execute(stmt)
@@ -72,6 +247,7 @@ class AccountService:
         page: int = 1,
         page_size: int = 20,
         status: str | None = None,
+        category: str | None = None,
         ai_reply: bool | None = None,
         scheduled_redelivery: bool | None = None,
         scheduled_rate: bool | None = None,
@@ -90,6 +266,7 @@ class AccountService:
             page: 页码
             page_size: 每页数量
             status: 状态筛选（active/inactive）
+            category: 账号分类筛选
             ai_reply: AI回复开关筛选
             scheduled_redelivery: 定时补发货筛选
             scheduled_rate: 定时补评价筛选
@@ -124,6 +301,13 @@ class AccountService:
                 # 禁用：status 在禁用列表中
                 conditions.append(XYAccount.status.in_(inactive_statuses))
         
+
+        # 账号分类筛选
+        if category is not None:
+            category_keyword = category.strip()
+            if category_keyword:
+                conditions.append(XYAccount.category == category_keyword)
+
         # AI回复筛选（从metadata_json中获取）
         if ai_reply is not None:
             if ai_reply:
@@ -220,7 +404,7 @@ class AccountService:
         total_result = await self.session.execute(count_stmt)
         total = total_result.scalar() or 0
         
-        # 分页查询：启用账号排在前面，再按创建时间倒序
+        # 分页查询：启用账号排在前面，再按分组与自定义排序展示
         from sqlalchemy import case
         inactive_statuses_list = ["inactive", "disabled", "suspended", "deleted"]
         status_order = case(
@@ -228,14 +412,20 @@ class AccountService:
             else_=0
         )
         offset = (page - 1) * page_size
-        stmt = base_stmt.order_by(status_order, XYAccount.created_at.desc()).offset(offset).limit(page_size)
+        stmt = base_stmt.order_by(
+            status_order,
+            XYAccount.category,
+            XYAccount.sort_order,
+            XYAccount.created_at.desc(),
+            XYAccount.id.desc(),
+        ).offset(offset).limit(page_size)
         result = await self.session.execute(stmt)
         
         return list(result.scalars().all()), total
 
     async def list_all_accounts(self) -> list[XYAccount]:
         """获取所有账号（用于启动时加载）"""
-        stmt = select(XYAccount).order_by(XYAccount.account_id)
+        stmt = select(XYAccount).order_by(XYAccount.category, XYAccount.sort_order, XYAccount.account_id)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -248,7 +438,7 @@ class AccountService:
         stmt = (
             select(XYAccount)
             .where(XYAccount.status == "active")
-            .order_by(XYAccount.account_id)
+            .order_by(XYAccount.category, XYAccount.sort_order, XYAccount.account_id)
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
@@ -320,6 +510,7 @@ class AccountService:
         *,
         unb: str | None = None,
         login_method: str = "manual",
+        category: str | None = None,
     ) -> XYAccount:
         # 全局唯一校验：account_id 不允许与任何用户的账号重复
         if await self.account_id_exists(account_id):
@@ -327,12 +518,15 @@ class AccountService:
 
         await AccountLimitService(self.session).ensure_can_add_account(owner_id)
 
+        normalized_category = await self.ensure_category(category, owner_id)
         account = XYAccount(
             owner_id=owner_id,
             account_id=account_id,
             cookie=cookie_value,
             login_method=login_method,
             status="active",
+            category=normalized_category,
+            sort_order=await self._top_sort_order(normalized_category, owner_id),
             auto_confirm=False,
             pause_duration=10,
             show_browser=False,
@@ -368,6 +562,118 @@ class AccountService:
         account.remark = remark
         self.session.add(account)
         await self.session.commit()
+
+    async def update_offline_supported(self, account: XYAccount, offline_supported: bool) -> None:
+        """更新账号是否支持接口下架/鱼小铺权限标记，存入 metadata，避免新增数据库字段。"""
+        metadata = dict(account.metadata_json or {})
+        metadata["offline_supported"] = bool(offline_supported)
+        account.metadata_json = metadata
+        self.session.add(account)
+        await self.session.commit()
+
+    async def update_account_id(self, account: XYAccount, new_account_id: str) -> str:
+        """更新账号ID，并同步所有以 account_id 字符串引用该账号的业务表。"""
+        normalized_new_id = (new_account_id or "").strip()
+        if not normalized_new_id:
+            raise ValueError("账号ID不能为空")
+        if len(normalized_new_id) > 80:
+            raise ValueError("账号ID不能超过80个字符")
+
+        old_account_id = account.account_id
+        if normalized_new_id == old_account_id:
+            return normalized_new_id
+
+        if await self.account_id_exists(normalized_new_id, exclude_pk=account.id):
+            raise ValueError("新的账号ID已存在")
+
+        # 先更新主账号表。xy_accounts.account_id 有唯一索引，重复会被数据库拦截。
+        await self.session.execute(
+            update(XYAccount)
+            .where(XYAccount.id == account.id)
+            .values(account_id=normalized_new_id)
+        )
+
+        # 兼容项目中大量按 account_id 字符串保存关联关系的表。
+        # 只更新当前数据库中字段名为 account_id 的字符列，避免误改数值型主键。
+        columns_sql = text("""
+            SELECT table_name
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+              AND column_name = 'account_id'
+              AND table_name <> 'xy_accounts'
+              AND data_type IN ('varchar', 'char', 'text', 'tinytext', 'mediumtext', 'longtext')
+        """)
+        result = await self.session.execute(columns_sql)
+        table_names = [row[0] for row in result.fetchall()]
+
+        for table_name in table_names:
+            safe_table_name = str(table_name).replace('`', '``')
+            await self.session.execute(
+                text(f"UPDATE `{safe_table_name}` SET account_id = :new_id WHERE account_id = :old_id"),
+                {"new_id": normalized_new_id, "old_id": old_account_id},
+            )
+
+        await self.session.commit()
+        account.account_id = normalized_new_id
+        return normalized_new_id
+
+    async def update_category(self, account: XYAccount, category: str | None) -> None:
+        """更新账号分类/分组；切换分组时放到新分组末尾。"""
+        normalized_category = _normalize_account_category(category)
+        await self.ensure_category(normalized_category, account.owner_id)
+        values = {"category": normalized_category}
+        if normalized_category != (account.category or "默认"):
+            values["sort_order"] = await self._next_sort_order(normalized_category, account.owner_id)
+        stmt = (
+            update(XYAccount)
+            .where(XYAccount.id == account.id)
+            .values(**values)
+        )
+        await self.session.execute(stmt)
+        await self.session.commit()
+        account.category = normalized_category
+        if "sort_order" in values:
+            account.sort_order = int(values["sort_order"])
+
+    async def update_accounts_category(self, account_ids: list[str], category: str, owner_id: int | None = None) -> int:
+        """批量移动账号到指定分组。"""
+        normalized_ids = list(dict.fromkeys(account_id.strip() for account_id in account_ids if account_id and account_id.strip()))
+        if not normalized_ids:
+            return 0
+
+        normalized_category = _normalize_account_category(category)
+        if owner_id is not None:
+            await self.ensure_category(normalized_category, owner_id)
+
+        accounts = await self.get_accounts_for_user(owner_id, normalized_ids)
+        next_order = await self._next_sort_order(normalized_category, owner_id)
+        for account in accounts:
+            account.category = normalized_category
+            account.sort_order = next_order
+            next_order += 1
+            self.session.add(account)
+
+        await self.session.commit()
+        return len(accounts)
+
+    async def update_sort_order(self, account_ids: list[str], owner_id: int | None = None) -> int:
+        """按传入账号ID顺序更新排序值。返回成功更新数量。"""
+        normalized_ids = [item.strip() for item in account_ids if item and item.strip()]
+        if not normalized_ids:
+            return 0
+        accounts = await self.get_accounts_for_user(owner_id, normalized_ids)
+        account_map = {account.account_id: account for account in accounts}
+        updated_count = 0
+        for index, account_id in enumerate(normalized_ids, start=1):
+            account = account_map.get(account_id)
+            if account is None:
+                continue
+            account.sort_order = index
+            self.session.add(account)
+            updated_count += 1
+        if updated_count:
+            await self.session.commit()
+        return updated_count
 
     async def update_auto_confirm(self, account: XYAccount, auto_confirm: bool) -> None:
         account.auto_confirm = auto_confirm
@@ -470,6 +776,7 @@ class AccountService:
                 account.updated_at = datetime.now(tz=UTC)
         else:
             await AccountLimitService(self.session).ensure_can_add_account(owner_id)
+            await self.ensure_category("默认", owner_id)
             base_id = unb or f"qr_{int(datetime.utcnow().timestamp())}"
             new_id = await self._generate_unique_account_id(owner_id, base_id)
             account = XYAccount(
@@ -478,6 +785,8 @@ class AccountService:
                 cookie=cookies,
                 login_method=login_method,
                 status="active",
+                category="默认",
+                sort_order=await self._top_sort_order("默认", owner_id),
                 auto_confirm=False,
                 pause_duration=10,
                 show_browser=False,

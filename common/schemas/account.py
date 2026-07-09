@@ -18,6 +18,8 @@ class AccountDetail(BaseModel):
     id: str
     value: str
     enabled: bool
+    category: str = "默认"
+    sort_order: int = 0
     auto_confirm: bool
     scheduled_redelivery: bool = False
     scheduled_rate: bool = False
@@ -41,6 +43,14 @@ class AccountDetail(BaseModel):
     username: str | None = None
     login_password: str | None = None
     show_browser: bool = False
+    offline_supported: bool = True  # 是否支持接口下架/鱼小铺下架权限
+    proxy_type: str | None = None
+    proxy_host: str | None = None
+    proxy_port: int | None = None
+    proxy_configured: bool = False
+    proxy_status: str = "unset"  # unset / success / failed
+    proxy_message: str | None = None
+    proxy_checked_at: str | None = None
     disable_reason: str | None = None
     filter_count: int = 0  # 消息过滤规则数量
 
@@ -50,14 +60,25 @@ class AccountOption(BaseModel):
 
     pk: int
     id: str
+    category: str = "默认"
+    sort_order: int = 0
     remark: str | None = None
     enabled: bool = True
     show_browser: bool = False
+    offline_supported: bool = True
+    proxy_type: str | None = None
+    proxy_host: str | None = None
+    proxy_port: int | None = None
+    proxy_configured: bool = False
+    proxy_status: str = "unset"
+    proxy_message: str | None = None
+    proxy_checked_at: str | None = None
 
 
 class AccountCreate(BaseModel):
     id: str = Field(..., description="Unique account identifier provided by the user")
     value: str = Field(..., description="Raw cookie content")
+    category: str = Field(default="默认", description="账号分类")
 
 
 class AccountCookieUpdate(BaseModel):
@@ -66,6 +87,11 @@ class AccountCookieUpdate(BaseModel):
 
 class AccountStatusUpdate(BaseModel):
     enabled: bool
+
+
+class AccountOfflineSupportedUpdate(BaseModel):
+    """账号是否支持接口下架/鱼小铺权限标记"""
+    offline_supported: bool = Field(default=True, description="是否支持接口下架；未开通鱼小铺/无权限账号建议关闭")
 
 
 class AccountBatchIdsUpdate(BaseModel):
@@ -79,6 +105,27 @@ class AccountBatchStatusUpdate(BaseModel):
 
 class AccountRemarkUpdate(BaseModel):
     remark: str
+
+
+class AccountIdUpdate(BaseModel):
+    account_id: str = Field(..., min_length=1, max_length=80, description="新的账号ID")
+
+
+class AccountCategoryUpdate(BaseModel):
+    category: str = Field(default="默认", max_length=32, description="账号分类/分组")
+
+
+class AccountGroupCreate(BaseModel):
+    category: str = Field(..., min_length=1, max_length=32, description="账号分组名称")
+
+
+class AccountBatchCategoryUpdate(BaseModel):
+    account_ids: list[str] = Field(..., description="需要移动分组的账号ID列表")
+    category: str = Field(..., min_length=1, max_length=32, description="目标账号分组名称")
+
+
+class AccountSortOrderUpdate(BaseModel):
+    account_ids: list[str] = Field(..., description="按当前顺序排列的账号ID列表")
 
 
 class AccountAutoConfirmUpdate(BaseModel):

@@ -54,7 +54,7 @@ async def get_user_info(
         db: 数据库会话（用于更新cookie）
 
     Returns:
-        {"avatar": "头像URL", "nick": "昵称"} 或 None
+        {"avatar": "头像URL", "nick": "昵称", "city": "城市", "cityChecked": True} 或 None
     """
     # 1. 检查 Redis 缓存
     cache_key = f"{AVATAR_CACHE_PREFIX}{cid}"
@@ -67,10 +67,10 @@ async def get_user_info(
                 # 兼容旧格式（纯 URL 字符串）→ nick 为空，需重新查询
                 if isinstance(data, str):
                     data = {"avatar": data, "nick": ""}
-                # 如果 avatar 和 nick 都有值，直接返回缓存
-                if data.get("avatar") and data.get("nick"):
+                # 如果 avatar、nick 都有值，并且已经尝试过城市，则直接返回缓存
+                if data.get("avatar") and data.get("nick") and (data.get("city") or data.get("cityChecked")):
                     return data
-                # nick 或 avatar 缺失，继续往下重新查 API
+                # nick、avatar 或城市尝试状态缺失，继续往下重新查 API
             except (json.JSONDecodeError, TypeError):
                 # 旧格式为纯 URL 字符串，需重新查询
                 pass
@@ -133,7 +133,7 @@ async def _fetch_user_info_from_api(
         retry_count: 令牌过期重试次数
 
     Returns:
-        {"avatar": "头像URL", "nick": "昵称"} 或 None
+        {"avatar": "头像URL", "nick": "昵称", "city": "城市", "cityChecked": True} 或 None
     """
     try:
         cookies = trans_cookies(cookies_str)
@@ -215,13 +215,14 @@ async def _fetch_user_info_from_api(
                     user_data = res_json.get("data", {}).get("userInfo", {})
                     logo = user_data.get("logo", "")
                     nick = user_data.get("nick", "")
-                    if logo or nick:
+                    city = _extract_city_from_user_info(user_data)
+                    if logo or nick or city:
                         logger.info(
                             f"【{account_id}】获取会话 {cid} 对方信息成功: "
-                            f"nick={nick}"
+                            f"nick={nick}, city={city or '未获取'}"
                         )
-                        return {"avatar": logo, "nick": nick}
-                    return None
+                        return {"avatar": logo, "nick": nick, "city": city, "cityChecked": True}
+                    return {"avatar": "", "nick": "", "city": "", "cityChecked": True}
 
                 # 令牌过期 - 用更新后的cookie重试
                 if ("TOKEN_EXOIRED" in ret_str or "TOKEN_EXPIRED" in ret_str) and retry_count < MAX_TOKEN_RETRY:
@@ -245,6 +246,57 @@ async def _fetch_user_info_from_api(
     except Exception as e:
         logger.warning(f"【{account_id}】查询用户信息异常: {e}")
         return None
+
+
+def _clean_city_label(value: object) -> str:
+    """将接口返回的地址/城市字段清洗成短城市标签。"""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text or text in {"null", "None", "未知", "中国"}:
+        return ""
+    for sep in ["/", "|", ",", "，", " "]:
+        if sep in text:
+            parts = [p.strip() for p in text.split(sep) if p.strip()]
+            text = parts[-1] if parts else text
+            break
+    for prefix in ["中国", "中华人民共和国"]:
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+    if len(text) > 12:
+        text = text[:12]
+    return text
+
+
+def _extract_city_from_user_info(user_data: object) -> str:
+    """从 mtop.taobao.idlemessage.pc.user.query 的 userInfo 中尽量提取城市。"""
+    if not isinstance(user_data, dict):
+        return ""
+
+    for key in ["city", "cityName", "city_name", "userCity", "liveCity"]:
+        city = _clean_city_label(user_data.get(key))
+        if city:
+            return city
+
+    for key in [
+        "location", "locationName", "area", "areaName", "province",
+        "provinceName", "ipLocation", "userLocation", "residence", "region",
+    ]:
+        city = _clean_city_label(user_data.get(key))
+        if city:
+            return city
+
+    for key in ["profile", "baseInfo", "locationInfo", "ext", "extension"]:
+        value = user_data.get(key)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                value = None
+        city = _extract_city_from_user_info(value)
+        if city:
+            return city
+    return ""
 
 
 def _handle_response_cookies(response, original_cookies_str: str) -> Optional[str]:

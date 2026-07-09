@@ -45,6 +45,8 @@ export interface Account {
   owner_id?: number
   cookie: string
   enabled: boolean
+  category?: string  // 账号分类/分组
+  sort_order?: number  // 账号排序，数字越小越靠前
   online?: boolean  // 在线状态：是否已建立真实 WebSocket 连接（口径同仪表盘“在线账号”）
   use_ai_reply: boolean
   use_default_reply: boolean
@@ -68,6 +70,14 @@ export interface Account {
   username?: string
   login_password?: string
   show_browser?: boolean
+  offline_supported?: boolean  // 是否支持接口下架/鱼小铺下架权限
+  proxy_type?: 'none' | 'http' | 'https' | 'socks5' | string | null
+  proxy_host?: string | null
+  proxy_port?: number | null
+  proxy_configured?: boolean
+  proxy_status?: 'unset' | 'success' | 'failed' | string
+  proxy_message?: string | null
+  proxy_checked_at?: string | null
   disable_reason?: string
   created_at?: string
   updated_at?: string

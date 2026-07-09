@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import type { FormEvent } from 'react'
 import { motion } from 'framer-motion'
 import { Mail, RefreshCw, Plus, Trash2, Power, PowerOff, X, Loader2 } from 'lucide-react'
-import { getMessageNotifications, setMessageNotification, getNotificationChannels, deleteMessageNotification } from '@/api/notifications'
+import { getMessageNotifications, setMessageNotification, setMessageNotificationsBatch, getNotificationChannels, deleteMessageNotification } from '@/api/notifications'
 import { getAccountDetails } from '@/api/accounts'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
@@ -19,7 +19,8 @@ export function MessageNotifications() {
   const [channels, setChannels] = useState<NotificationChannel[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [isModalOpen, setIsModalOpen] = useState(false)
-  const [formAccountId, setFormAccountId] = useState('')
+  const [formAccountIds, setFormAccountIds] = useState<string[]>([])
+  const [formAccountSearch, setFormAccountSearch] = useState('')
   const [formChannelId, setFormChannelId] = useState('')
   const [formEnabled, setFormEnabled] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -97,7 +98,8 @@ export function MessageNotifications() {
   }
 
   const openAddModal = () => {
-    setFormAccountId('')
+    setFormAccountIds([])
+    setFormAccountSearch('')
     setFormChannelId('')
     setFormEnabled(true)
     setIsModalOpen(true)
@@ -107,10 +109,42 @@ export function MessageNotifications() {
     setIsModalOpen(false)
   }
 
+  const getAccountLabel = (account: Account) => {
+    return account.note ? `${account.id} (${account.note})` : account.id
+  }
+
+  const filteredAccounts = accounts.filter((account) => {
+    const keyword = formAccountSearch.trim().toLowerCase()
+    if (!keyword) return true
+    return getAccountLabel(account).toLowerCase().includes(keyword)
+  })
+
+  const selectedAccountSet = new Set(formAccountIds)
+
+  const toggleFormAccount = (accountId: string) => {
+    setFormAccountIds((prev) => (
+      prev.includes(accountId)
+        ? prev.filter((id) => id !== accountId)
+        : [...prev, accountId]
+    ))
+  }
+
+  const selectAllFilteredAccounts = () => {
+    setFormAccountIds((prev) => {
+      const next = new Set(prev)
+      filteredAccounts.forEach((account) => next.add(account.id))
+      return Array.from(next)
+    })
+  }
+
+  const clearSelectedAccounts = () => {
+    setFormAccountIds([])
+  }
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
-    if (!formAccountId) {
-      addToast({ type: 'warning', message: '请选择账号' })
+    if (formAccountIds.length === 0) {
+      addToast({ type: 'warning', message: '请至少勾选一个账号' })
       return
     }
     if (!formChannelId) {
@@ -120,8 +154,8 @@ export function MessageNotifications() {
 
     setSaving(true)
     try {
-      await setMessageNotification(formAccountId, Number(formChannelId), formEnabled)
-      addToast({ type: 'success', message: '通知已添加' })
+      const result = await setMessageNotificationsBatch(formAccountIds, Number(formChannelId), formEnabled)
+      addToast({ type: 'success', message: result.message || `已保存 ${formAccountIds.length} 个账号的通知配置` })
       closeModal()
       loadNotifications()
     } catch {
@@ -240,7 +274,7 @@ export function MessageNotifications() {
       {/* 添加通知弹窗 */}
       {isModalOpen && (
         <div className="modal-overlay">
-          <div className="modal-content max-w-lg min-h-[400px]">
+          <div className="modal-content max-w-2xl min-h-[520px]">
             <div className="modal-header flex items-center justify-between">
               <h2 className="text-lg font-semibold">添加消息通知</h2>
               <button onClick={closeModal} className="p-1 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg">
@@ -250,20 +284,59 @@ export function MessageNotifications() {
             <form onSubmit={handleSubmit}>
               <div className="modal-body space-y-4">
                 <div className="input-group">
-                  <label className="input-label">选择账号 *</label>
-                  <Select
-                    value={formAccountId}
-                    onChange={setFormAccountId}
-                    options={[
-                      { value: '', label: '请选择账号', key: 'empty' },
-                      ...accounts.map((account) => ({
-                        value: account.id,
-                        label: account.note ? `${account.id} (${account.note})` : account.id,
-                        key: account.pk?.toString() || account.id,
-                      })),
-                    ]}
-                    placeholder="请选择账号"
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="input-label">选择账号 *</label>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">
+                      已选 {formAccountIds.length} 个
+                    </span>
+                  </div>
+                  <input
+                    type="text"
+                    value={formAccountSearch}
+                    onChange={(e) => setFormAccountSearch(e.target.value)}
+                    className="input-ios"
+                    placeholder="搜索账号ID或备注"
                   />
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={selectAllFilteredAccounts}
+                      className="px-3 py-1.5 text-xs rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-300 dark:hover:bg-blue-900/50 transition-colors"
+                    >
+                      勾选当前列表
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearSelectedAccounts}
+                      className="px-3 py-1.5 text-xs rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 transition-colors"
+                    >
+                      清空
+                    </button>
+                  </div>
+                  <div className="mt-3 max-h-64 overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700 divide-y divide-slate-100 dark:divide-slate-700 bg-white dark:bg-slate-800">
+                    {filteredAccounts.length === 0 ? (
+                      <div className="px-4 py-6 text-center text-sm text-slate-500 dark:text-slate-400">
+                        没有匹配的账号
+                      </div>
+                    ) : (
+                      filteredAccounts.map((account) => (
+                        <label
+                          key={account.pk?.toString() || account.id}
+                          className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700/60 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedAccountSet.has(account.id)}
+                            onChange={() => toggleFormAccount(account.id)}
+                            className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-sm text-slate-700 dark:text-slate-200">
+                            {getAccountLabel(account)}
+                          </span>
+                        </label>
+                      ))
+                    )}
+                  </div>
                 </div>
                 <div className="input-group">
                   <label className="input-label">选择通知渠道 *</label>
@@ -308,7 +381,7 @@ export function MessageNotifications() {
                       保存中...
                     </span>
                   ) : (
-                    '保存'
+                    `保存 ${formAccountIds.length || ''}`
                   )}
                 </button>
               </div>

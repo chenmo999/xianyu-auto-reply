@@ -201,6 +201,7 @@ class AccountImportService:
                 # 更新
                 existing.cookie = cookie
                 existing.status = status
+                existing.category = _parse_str(row.get("账号分类")) or existing.category or "默认"
                 existing.remark = _parse_str(row.get("备注")) or existing.remark
                 existing.username = _parse_str(row.get("用户名")) or existing.username
                 existing.login_password = _parse_str(row.get("登录密码")) or existing.login_password
@@ -232,6 +233,7 @@ class AccountImportService:
                     cookie=cookie,
                     login_method="import",
                     status=status,
+                    category=_parse_str(row.get("账号分类")) or "默认",
                     remark=_parse_str(row.get("备注")),
                     username=_parse_str(row.get("用户名")),
                     login_password=_parse_str(row.get("登录密码")),

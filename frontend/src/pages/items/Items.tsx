@@ -101,6 +101,9 @@ export function Items() {
   const [batchDeleteItemConfirm, setBatchDeleteItemConfirm] = useState(false)
   const [batchOfflineConfirm, setBatchOfflineConfirm] = useState(false)
   const [offlining, setOfflining] = useState(false)
+  const selectedAccountInfo = accounts.find((account) => account.id === selectedAccount)
+  const offlineSupportedAccounts = accounts.filter((account) => account.offline_supported !== false)
+  const selectedOfflineSupportedAccount = selectedAccountInfo?.offline_supported === false ? '' : selectedAccount
   const [deleteDefaultReplyConfirm, setDeleteDefaultReplyConfirm] = useState(false)
   const [batchDeleteDefaultReplyConfirm, setBatchDeleteDefaultReplyConfirm] = useState(false)
   const [deleteAiPromptConfirm, setDeleteAiPromptConfirm] = useState(false)
@@ -356,6 +359,10 @@ export function Items() {
       addToast({ type: 'warning', message: '请先在顶部「筛选账号」选择具体账号后再下架' })
       return
     }
+    if (selectedAccountInfo?.offline_supported === false) {
+      addToast({ type: 'warning', message: '该账号已标记为不支持接口下架，可能未开通鱼小铺/卖家工具权限' })
+      return
+    }
     setBatchOfflineConfirm(true)
   }
 
@@ -373,8 +380,11 @@ export function Items() {
     try {
       const result = await batchOfflineItems(selectedAccount, itemIds)
       const data = result.data as
-        | { results?: { item_id: string; success: boolean }[]; fail_count?: number }
+        | { results?: { item_id: string; success: boolean; message?: string }[]; fail_count?: number; offline_supported?: boolean; unauthorized?: boolean; account_id?: string }
         | undefined
+      if (data?.offline_supported === false && selectedAccount) {
+        setAccounts((prev) => prev.map((account) => (account.id === selectedAccount ? { ...account, offline_supported: false } : account)))
+      }
       const failCount = data?.fail_count ?? 0
       if (result.success) {
         if (failCount > 0) {
@@ -394,7 +404,10 @@ export function Items() {
         loadItems()
       } else {
         setBatchOfflineConfirm(false)
-        addToast({ type: 'error', message: result.message || '下架失败' })
+        addToast({
+          type: data?.unauthorized ? 'warning' : 'error',
+          message: result.message || (data?.unauthorized ? '账号无下架权限，可能未开通鱼小铺' : '下架失败'),
+        })
       }
     } catch {
       setBatchOfflineConfirm(false)
@@ -1108,7 +1121,7 @@ export function Items() {
       {/* Filters */}
       <div className="vben-card">
         <div className="vben-card-body">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
             <div className="input-group">
               <label className="input-label">筛选账号</label>
               <Select
@@ -1118,11 +1131,27 @@ export function Items() {
                   { value: '', label: '所有账号', key: 'all' },
                   ...accounts.map((account) => ({
                     value: account.id,
-                    label: account.note ? `${account.id} (${account.note})` : account.id,
+                    label: `${account.note ? `${account.id} (${account.note})` : account.id}${account.offline_supported === false ? ' [不支持下架]' : ''}`,
                     key: account.pk?.toString() || account.id,
                   })),
                 ]}
                 placeholder="所有账号"
+              />
+            </div>
+            <div className="input-group">
+              <label className="input-label">支持下架账号</label>
+              <Select
+                value={selectedOfflineSupportedAccount}
+                onChange={setSelectedAccount}
+                options={[
+                  { value: '', label: '全部支持下架账号', key: 'offline-supported-all' },
+                  ...offlineSupportedAccounts.map((account) => ({
+                    value: account.id,
+                    label: account.note ? `${account.id} (${account.note})` : account.id,
+                    key: `offline-supported-${account.pk?.toString() || account.id}`,
+                  })),
+                ]}
+                placeholder="选择支持下架账号"
               />
             </div>
             <div className="input-group">
@@ -2376,7 +2405,7 @@ export function Items() {
       <ConfirmModal
         isOpen={batchOfflineConfirm}
         title="批量下架确认"
-        message={`确定要用账号「${selectedAccount}」下架选中的 ${selectedIds.size} 个商品吗？下架后商品将从在卖中移除（可在卖家后台重新上架）。`}
+        message={`确定要用账号「${selectedAccount}」下架选中的 ${selectedIds.size} 个商品吗？下架后商品将从在卖中移除（可在卖家后台重新上架）。${selectedAccountInfo?.offline_supported === false ? ' 注意：该账号已标记为不支持接口下架。' : ''}`}
         confirmText="下架"
         cancelText="取消"
         type="warning"

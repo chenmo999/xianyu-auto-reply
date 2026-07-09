@@ -15,6 +15,16 @@ export const getAccountDetails = async (): Promise<AccountDetail[]> => {
     enabled: boolean
     remark?: string
     show_browser?: boolean
+    offline_supported?: boolean
+    proxy_type?: string | null
+    proxy_host?: string | null
+    proxy_port?: number | null
+    proxy_configured?: boolean
+    proxy_status?: string
+    proxy_message?: string | null
+    proxy_checked_at?: string | null
+    category?: string
+    sort_order?: number
   }
   const data = await get<BackendAccountOption[]>(`${COOKIE_PREFIX}/options`)
   return data.map((item) => ({
@@ -25,6 +35,16 @@ export const getAccountDetails = async (): Promise<AccountDetail[]> => {
     auto_confirm: false,
     note: item.remark,
     show_browser: item.show_browser,
+    offline_supported: item.offline_supported ?? true,
+    proxy_type: item.proxy_type || 'none',
+    proxy_host: item.proxy_host || null,
+    proxy_port: item.proxy_port || null,
+    proxy_configured: item.proxy_configured || false,
+    proxy_status: item.proxy_status || 'unset',
+    proxy_message: item.proxy_message || null,
+    proxy_checked_at: item.proxy_checked_at || null,
+    category: item.category || '默认',
+    sort_order: item.sort_order || 0,
     use_ai_reply: false,
     use_default_reply: false,
   }))
@@ -42,6 +62,7 @@ export interface AccountFilterParams {
   online?: boolean | null                // 在线状态（true=在线/false=离线）
   disable_reason?: string | null         // 禁用原因关键词（模糊搜索）
   account_id?: string | null             // 账号ID关键词（模糊搜索）
+  category?: string | null               // 账号分类
 }
 
 // 获取账号详情列表（分页）
@@ -83,6 +104,14 @@ export const getAccountDetailsPaginated = async (
     username?: string
     login_password?: string
     show_browser?: boolean
+    offline_supported?: boolean
+    proxy_type?: string | null
+    proxy_host?: string | null
+    proxy_port?: number | null
+    proxy_configured?: boolean
+    proxy_status?: string
+    proxy_message?: string | null
+    proxy_checked_at?: string | null
     disable_reason?: string
     filter_count?: number
     today_reply_count?: number
@@ -92,6 +121,8 @@ export const getAccountDetailsPaginated = async (
     owner_username?: string
     created_at?: string
     updated_at?: string
+    category?: string
+    sort_order?: number
   }
   
   // 构建查询参数
@@ -115,6 +146,9 @@ export const getAccountDetailsPaginated = async (
     // 账号ID：模糊搜索关键词，去除前后空白后再判断是否传参，避免发送空字符串
     if (filters.account_id && filters.account_id.trim()) {
       params.append('account_id', filters.account_id.trim())
+    }
+    if (filters.category && filters.category.trim()) {
+      params.append('category', filters.category.trim())
     }
   }
   
@@ -157,6 +191,14 @@ export const getAccountDetailsPaginated = async (
       username: item.username,
       login_password: item.login_password,
       show_browser: item.show_browser,
+      offline_supported: item.offline_supported ?? true,
+      proxy_type: item.proxy_type || 'none',
+      proxy_host: item.proxy_host || null,
+      proxy_port: item.proxy_port || null,
+      proxy_configured: item.proxy_configured || false,
+      proxy_status: item.proxy_status || 'unset',
+      proxy_message: item.proxy_message || null,
+      proxy_checked_at: item.proxy_checked_at || null,
       disable_reason: item.disable_reason,
       filter_count: item.filter_count || 0,
       today_reply_count: item.today_reply_count || 0,
@@ -164,6 +206,8 @@ export const getAccountDetailsPaginated = async (
       aiEnabled: item.ai_enabled || false,
       owner_id: item.owner_id,
       owner_username: item.owner_username || '',
+      category: item.category || '默认',
+      sort_order: item.sort_order || 0,
       use_ai_reply: false,
       use_default_reply: false,
       created_at: item.created_at,
@@ -177,9 +221,9 @@ export const getAccountDetailsPaginated = async (
 }
 
 // 添加账号
-export const addAccount = (data: { id: string; cookie: string }): Promise<ApiResponse> => {
-  // 后端需要 id 和 value 字段
-  return post(COOKIE_PREFIX, { id: data.id, value: data.cookie })
+export const addAccount = (data: { id: string; cookie: string; category?: string }): Promise<ApiResponse> => {
+  // 后端需要 id 和 value 字段；v1.0.1 增加 category 账号分类
+  return post(COOKIE_PREFIX, { id: data.id, value: data.cookie, category: data.category || '默认' })
 }
 
 // 更新账号 Cookie 值
@@ -190,6 +234,10 @@ export const updateAccountCookie = (id: string, value: string): Promise<ApiRespo
 // 更新账号启用/禁用状态
 export const updateAccountStatus = (id: string, enabled: boolean): Promise<ApiResponse> => {
   return put(`${COOKIE_PREFIX}/${id}/status`, { enabled })
+}
+
+export const updateAccountOfflineSupported = (id: string, offlineSupported: boolean): Promise<ApiResponse> => {
+  return put(`${COOKIE_PREFIX}/${id}/offline-supported`, { offline_supported: offlineSupported })
 }
 
 export interface BatchAccountStatusResponseData {
@@ -222,6 +270,42 @@ export const renewAccountLoginBatch = (accountIds: string[]): Promise<ApiRespons
 // 更新账号备注
 export const updateAccountRemark = (id: string, remark: string): Promise<ApiResponse> => {
   return put(`${COOKIE_PREFIX}/${id}/remark`, { remark })
+}
+
+export const updateAccountId = (id: string, newAccountId: string): Promise<ApiResponse<{ old_account_id: string; account_id: string }>> => {
+  return put(`${COOKIE_PREFIX}/${id}/account-id`, { account_id: newAccountId })
+}
+
+// 更新账号分类
+export const updateAccountCategory = (id: string, category: string): Promise<ApiResponse> => {
+  return put(`${COOKIE_PREFIX}/${id}/category`, { category })
+}
+
+// 获取账号分组列表
+export const getAccountCategories = async (): Promise<string[]> => {
+  const result = await get<ApiResponse<string[]>>(`${COOKIE_PREFIX}/categories`)
+  return Array.isArray(result.data) ? result.data : ['默认', '工作', '私人', '测试']
+}
+
+// 新增账号分组：分组会持久保存，即使暂时没有账号也不会刷新消失
+export const createAccountCategory = async (category: string): Promise<string> => {
+  const result = await post<ApiResponse<{ category: string }>>(`${COOKIE_PREFIX}/categories`, { category })
+  return result.data?.category || category
+}
+
+// 删除账号分组：后端会把该分组下账号自动移动到“默认”
+export const deleteAccountCategory = (category: string): Promise<ApiResponse<{ category: string; moved_count: number; deleted_count: number }>> => {
+  return del(`${COOKIE_PREFIX}/categories/${encodeURIComponent(category)}`)
+}
+
+// 批量移动账号到指定分组
+export const updateAccountsCategoryBatch = (accountIds: string[], category: string): Promise<ApiResponse> => {
+  return put(`${COOKIE_PREFIX}/category/batch`, { account_ids: accountIds, category })
+}
+
+// 更新账号排序：传入当前页面/当前分组内的账号ID顺序
+export const updateAccountSortOrder = (accountIds: string[]): Promise<ApiResponse> => {
+  return put(`${COOKIE_PREFIX}/sort/order`, { account_ids: accountIds })
 }
 
 // 更新账号自动确认设置
@@ -526,10 +610,23 @@ export interface ProxyConfig {
   proxy_pass?: string
 }
 
+export interface ProxyStatusData {
+  proxy_configured: boolean
+  proxy_status: 'unset' | 'success' | 'failed' | string
+  proxy_message?: string | null
+  proxy_checked_at?: string | null
+}
+
 export interface ProxyConfigResponse {
   success: boolean
   message?: string
-  data?: ProxyConfig
+  data?: ProxyConfig & Partial<ProxyStatusData>
+}
+
+export interface ProxyTestResponse {
+  success: boolean
+  message?: string
+  data?: ProxyStatusData
 }
 
 // 获取代理配置
@@ -545,6 +642,11 @@ export const updateProxyConfig = (accountId: string, config: ProxyConfig): Promi
 // 清除代理配置
 export const clearProxyConfig = (accountId: string): Promise<ProxyConfigResponse> => {
   return del(`${PROXY_PREFIX}/${accountId}`)
+}
+
+// 测试账号代理是否可用，并保存测试结果
+export const testProxyConfig = (accountId: string): Promise<ProxyTestResponse> => {
+  return post(`${PROXY_PREFIX}/${accountId}/test`)
 }
 
 // ==================== 退款订单注销配置 ====================

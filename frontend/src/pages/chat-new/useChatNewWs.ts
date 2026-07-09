@@ -26,7 +26,7 @@ interface UseChatNewWsOptions {
   /** 收到新消息时的回调（包含来源账号ID） */
   onNewMessage: (accountId: string, cid: string, msg: ChatMessage) => void
   /** WebSocket 断连时的回调 */
-  onDisconnect?: (accountId: string) => void
+  onDisconnect?: (accountId: string, code?: number) => void
 }
 
 /**
@@ -96,7 +96,7 @@ export function useChatNewWs({ accountIds, onNewMessage, onDisconnect }: UseChat
         conn.heartbeat = null
       }
       if (!conn.closed && onDisconnectRef.current) {
-        onDisconnectRef.current(aid)
+        onDisconnectRef.current(aid, event.code)
       }
       // 鉴权失败（4401 未认证 / 4403 无权限）为终止性关闭，不再重连，避免请求风暴
       const isAuthFailure = event.code === 4401 || event.code === 4403

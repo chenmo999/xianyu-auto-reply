@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pydantic import BaseModel
 
@@ -27,3 +27,10 @@ class MessageNotificationSet(BaseModel):
     channel_id: int
     enabled: bool = True
 
+
+
+
+class MessageNotificationBatchSet(BaseModel):
+    cookie_ids: list[str]
+    channel_id: int
+    enabled: bool = True

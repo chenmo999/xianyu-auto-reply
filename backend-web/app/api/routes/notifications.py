@@ -8,6 +8,7 @@ from common.models.user import User
 from common.schemas.common import ApiResponse
 from common.schemas.notification import (
     MessageNotificationSet,
+    MessageNotificationBatchSet,
     NotificationChannelCreate,
     NotificationChannelUpdate,
 )
@@ -136,6 +137,51 @@ async def list_message_notifications(
     service: MessageNotificationService = Depends(deps.get_message_notification_service),
 ) -> dict:
     return await service.list_notifications(current_user.id)
+
+
+@messages_router.post("/batch", response_model=ApiResponse)
+async def set_message_notifications_batch(
+    payload: MessageNotificationBatchSet,
+    current_user: User = Depends(deps.get_current_active_user),
+    service: MessageNotificationService = Depends(deps.get_message_notification_service),
+) -> ApiResponse:
+    cookie_ids = []
+    seen = set()
+    for cookie_id in payload.cookie_ids:
+        value = str(cookie_id).strip()
+        if value and value not in seen:
+            cookie_ids.append(value)
+            seen.add(value)
+
+    if not cookie_ids:
+        return ApiResponse(success=False, message="请选择要添加通知的账号")
+
+    success_count = 0
+    failed_accounts = []
+    single_payload = MessageNotificationSet(
+        channel_id=payload.channel_id,
+        enabled=payload.enabled,
+    )
+    for cookie_id in cookie_ids:
+        success = await service.set_notification(current_user.id, cookie_id, single_payload)
+        if success:
+            success_count += 1
+        else:
+            failed_accounts.append(cookie_id)
+
+    if success_count == 0:
+        return ApiResponse(
+            success=False,
+            message="保存失败：账号或通知渠道不存在",
+        )
+
+    message = f"已保存 {success_count} 个账号的消息通知"
+    if failed_accounts:
+        preview = "、".join(failed_accounts[:5])
+        suffix = "..." if len(failed_accounts) > 5 else ""
+        message += f"，{len(failed_accounts)} 个失败：{preview}{suffix}"
+
+    return ApiResponse(success=True, message=message)
 
 
 @messages_router.get("/{cookie_id}")

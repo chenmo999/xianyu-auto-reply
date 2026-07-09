@@ -790,6 +790,13 @@ async def batch_delete_items(
     return ApiResponse(success=True, message=f"已删除 {removed} 个商品")
 
 
+
+
+def _account_offline_supported(account) -> bool:
+    metadata = account.metadata_json if isinstance(account.metadata_json, dict) else {}
+    value = metadata.get("offline_supported")
+    return True if value is None else bool(value)
+
 @items_router.post("/batch-offline", response_model=ApiResponse)
 async def batch_offline_items(
     payload: ItemBatchOfflineRequest,
@@ -812,18 +819,41 @@ async def batch_offline_items(
         return ApiResponse(success=False, message="账号不存在")
     if not account.cookie:
         return ApiResponse(success=False, message="该账号未登录（Cookie为空），无法下架")
+    if not _account_offline_supported(account):
+        return ApiResponse(
+            success=False,
+            message="该账号已标记为不支持接口下架，可能未开通鱼小铺/卖家工具权限。请在账号管理中改为支持后再试。",
+            data={
+                "results": [{"item_id": str(i), "success": False, "message": "账号无下架权限"} for i in payload.item_ids],
+                "suc_count": 0,
+                "fail_count": len(payload.item_ids),
+                "offline_supported": False,
+                "account_id": account.account_id,
+            },
+        )
 
     result = await batch_offline_items_from_xianyu(
         account.account_id, account.cookie, payload.item_ids
     )
     suc_count = result.get("suc_count", 0)
     fail_count = result.get("fail_count", 0)
+    unauthorized = bool(result.get("unauthorized"))
+    if unauthorized:
+        await account_service.update_offline_supported(account, False)
     logger.info(
         f"批量下架商品: 账号={account.account_id}, 请求={len(payload.item_ids)}, "
         f"成功={suc_count}, 失败={fail_count}"
     )
 
-    data = {"results": result.get("results", []), "suc_count": suc_count, "fail_count": fail_count}
+    data = {
+        "results": result.get("results", []),
+        "suc_count": suc_count,
+        "fail_count": fail_count,
+        "unauthorized": unauthorized,
+        "offline_supported": False if unauthorized else _account_offline_supported(account),
+        "account_id": account.account_id,
+        "raw_message": result.get("raw_message"),
+    }
     # 全部失败：透传闲鱼返回的失败原因，便于前端展示
     if suc_count == 0:
         return ApiResponse(
