@@ -94,7 +94,68 @@ echo "5. 构建并启动容器..."
 docker compose -f "$COMPOSE_FILE" --env-file .env build backend-web frontend
 docker compose -f "$COMPOSE_FILE" --env-file .env up -d
 
-echo "6. 部署完成"
+load_env_value() {
+  awk -F= -v key="$1" '$1==key {sub(/^[^=]*=/,""); gsub(/\r|"/,""); print; exit}' .env
+}
+
+DB_NAME="$(load_env_value MYSQL_DATABASE)"
+MYSQL_ROOT_PASSWORD="$(load_env_value MYSQL_ROOT_PASSWORD)"
+
+echo "6. 等待 MySQL 就绪..."
+MYSQL_READY=0
+for i in $(seq 1 60); do
+  if docker exec xianyu-mysql mysqladmin ping -uroot -p"$MYSQL_ROOT_PASSWORD" --silent >/dev/null 2>&1; then
+    MYSQL_READY=1
+    break
+  fi
+  sleep 2
+done
+
+if [ "$MYSQL_READY" != "1" ]; then
+  echo "MySQL 启动超时，请检查 xianyu-mysql 容器日志"
+  docker logs --tail=100 xianyu-mysql || true
+  exit 1
+fi
+
+echo "7. 等待数据库表初始化..."
+ACCOUNT_TABLE_READY=0
+for i in $(seq 1 60); do
+  TABLE_FOUND="$(docker exec -i xianyu-mysql mysql -N -s -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB_NAME" -e "SHOW TABLES LIKE 'xy_accounts';" 2>/dev/null | tr -d '\r')"
+  if [ "$TABLE_FOUND" = "xy_accounts" ]; then
+    ACCOUNT_TABLE_READY=1
+    break
+  fi
+  sleep 2
+done
+
+if [ "$ACCOUNT_TABLE_READY" != "1" ]; then
+  echo "未检测到 xy_accounts 表，数据库初始化可能失败"
+  docker logs --tail=100 xianyu-backend-web || true
+  exit 1
+fi
+
+ensure_mysql_column() {
+  TABLE_NAME="$1"
+  COLUMN_NAME="$2"
+  COLUMN_DEF="$3"
+
+  EXISTS="$(docker exec -i xianyu-mysql mysql -N -s -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB_NAME" -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='$TABLE_NAME' AND COLUMN_NAME='$COLUMN_NAME';" 2>/dev/null | tr -d '\r')"
+
+  if [ "$EXISTS" = "1" ]; then
+    echo "字段已存在：$TABLE_NAME.$COLUMN_NAME"
+  else
+    echo "新增字段：$TABLE_NAME.$COLUMN_NAME"
+    docker exec -i xianyu-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB_NAME" -e "ALTER TABLE $TABLE_NAME ADD COLUMN $COLUMN_DEF;"
+  fi
+}
+
+echo "8. 自动升级 Chenmo 数据库字段..."
+ensure_mysql_column "xy_accounts" "category" "category VARCHAR(50) NOT NULL DEFAULT '未分类' COMMENT '账号分类' AFTER status"
+ensure_mysql_column "xy_accounts" "sort_order" "sort_order INT NOT NULL DEFAULT 0 COMMENT '账号排序' AFTER category"
+
+echo "数据库字段检查完成"
+
+echo "9. 部署完成"
 echo
 echo "请打开："
 echo "http://服务器IP:9000"
