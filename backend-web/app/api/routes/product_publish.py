@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 import hashlib
 import io
+import json
 import os
 import re
 import time
@@ -31,6 +32,7 @@ from sqlalchemy import text, update, select
 
 from app.api.deps import get_current_active_user, get_db_session
 from app.services.product_publish_service import ProductMaterialService
+from app.services.ali1688_login_service import ali1688_login_service
 from app.services.publish_batch_status_service import PublishBatchStatusService
 from app.services.publish_execution_service import PublishExecutorService, PublishLogService
 from common.models.user import User, UserRole
@@ -116,6 +118,22 @@ class Save1688CookieRequest(BaseModel):
     cookie: str = Field(..., min_length=10, description="1688登录Cookie")
 
 
+class Ali1688ClickRequest(BaseModel):
+    """1688服务器浏览器点击请求"""
+    x: float = Field(..., description="点击X坐标")
+    y: float = Field(..., description="点击Y坐标")
+
+
+class Ali1688TypeRequest(BaseModel):
+    """1688服务器浏览器输入请求"""
+    text: str = Field(..., description="输入内容")
+
+
+class Ali1688PressRequest(BaseModel):
+    """1688服务器浏览器按键请求"""
+    key: str = Field(..., description="按键，例如 Enter / Tab / Backspace")
+
+
 async def _ensure_1688_auth_table(session: AsyncSession) -> None:
     """确保1688登录态表存在"""
     await session.execute(text("""
@@ -196,6 +214,131 @@ async def get_1688_auth_status(
             "updated_at": str(row.get("updated_at")) if row and row.get("updated_at") else None,
         },
     )
+
+
+
+@router.post("/1688/browser/start", response_model=ApiResponse)
+async def start_1688_browser_login(
+    current_user: User = Depends(get_current_active_user),
+):
+    """打开1688服务器浏览器登录页"""
+    try:
+        data = await ali1688_login_service.start(current_user.id)
+        return ApiResponse(success=True, message="1688服务器浏览器已打开", data=data)
+    except Exception as exc:
+        logger.exception("打开1688服务器浏览器失败")
+        return ApiResponse(success=False, message=f"打开1688服务器浏览器失败: {exc}")
+
+
+@router.get("/1688/browser/screenshot", response_model=ApiResponse)
+async def get_1688_browser_screenshot(
+    current_user: User = Depends(get_current_active_user),
+):
+    """获取1688服务器浏览器截图"""
+    try:
+        data = await ali1688_login_service.screenshot(current_user.id)
+        return ApiResponse(success=True, message="截图成功", data=data)
+    except Exception as exc:
+        return ApiResponse(success=False, message=str(exc))
+
+
+@router.post("/1688/browser/click", response_model=ApiResponse)
+async def click_1688_browser(
+    req: Ali1688ClickRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """点击1688服务器浏览器"""
+    try:
+        data = await ali1688_login_service.click(current_user.id, req.x, req.y)
+        return ApiResponse(success=True, message="点击成功", data=data)
+    except Exception as exc:
+        return ApiResponse(success=False, message=str(exc))
+
+
+@router.post("/1688/browser/type", response_model=ApiResponse)
+async def type_1688_browser(
+    req: Ali1688TypeRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """向1688服务器浏览器当前焦点输入文字"""
+    try:
+        data = await ali1688_login_service.type_text(current_user.id, req.text)
+        return ApiResponse(success=True, message="输入成功", data=data)
+    except Exception as exc:
+        return ApiResponse(success=False, message=str(exc))
+
+
+@router.post("/1688/browser/press", response_model=ApiResponse)
+async def press_1688_browser(
+    req: Ali1688PressRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """向1688服务器浏览器发送按键"""
+    try:
+        data = await ali1688_login_service.press(current_user.id, req.key)
+        return ApiResponse(success=True, message="按键成功", data=data)
+    except Exception as exc:
+        return ApiResponse(success=False, message=str(exc))
+
+
+@router.post("/1688/browser/finish", response_model=ApiResponse)
+async def finish_1688_browser_login(
+    current_user: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """用户完成1688登录后，自动读取并保存Cookie"""
+    try:
+        login_data = await ali1688_login_service.finish(current_user.id)
+        cookie = login_data.get("cookie") or ""
+        storage_state = login_data.get("storage_state") or {}
+
+        if not cookie:
+            return ApiResponse(success=False, message="没有读取到1688 Cookie，请确认已经登录成功")
+
+        await _ensure_1688_auth_table(session)
+        await session.execute(
+            text("""
+                INSERT INTO xy_1688_auth (owner_id, cookie, storage_state, status, last_check_at)
+                VALUES (:owner_id, :cookie, :storage_state, 'browser_logged_in', NOW())
+                ON DUPLICATE KEY UPDATE
+                    cookie = VALUES(cookie),
+                    storage_state = VALUES(storage_state),
+                    status = 'browser_logged_in',
+                    last_check_at = NOW(),
+                    updated_at = NOW()
+            """),
+            {
+                "owner_id": current_user.id,
+                "cookie": cookie,
+                "storage_state": json.dumps(storage_state, ensure_ascii=False),
+            },
+        )
+        await session.commit()
+
+        await ali1688_login_service.close(current_user.id)
+
+        return ApiResponse(
+            success=True,
+            message="1688登录态已自动保存",
+            data={
+                "has_cookie": True,
+                "cookie_count": login_data.get("cookie_count"),
+                "url": login_data.get("url"),
+                "title": login_data.get("title"),
+            },
+        )
+    except Exception as exc:
+        logger.exception("保存1688服务器登录态失败")
+        return ApiResponse(success=False, message=f"保存1688登录态失败: {exc}")
+
+
+@router.post("/1688/browser/close", response_model=ApiResponse)
+async def close_1688_browser_login(
+    current_user: User = Depends(get_current_active_user),
+):
+    """关闭1688服务器浏览器"""
+    await ali1688_login_service.close(current_user.id)
+    return ApiResponse(success=True, message="1688服务器浏览器已关闭")
 
 
 @router.post("/1688/auth/cookie/clear", response_model=ApiResponse)
