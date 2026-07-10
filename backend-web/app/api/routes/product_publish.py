@@ -27,7 +27,7 @@ from loguru import logger
 from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import update, select
+from sqlalchemy import text, update, select
 
 from app.api.deps import get_current_active_user, get_db_session
 from app.services.product_publish_service import ProductMaterialService
@@ -105,6 +105,121 @@ class BatchPublishRequest(BaseModel):
     """批量发布请求"""
     account_ids: List[str] = Field(..., min_length=1, description="账号ID列表")
     material_ids: List[int] = Field(..., min_length=1, description="素材ID列表")
+
+
+
+
+# ==================== 1688 导入 / 登录态 ====================
+
+class Save1688CookieRequest(BaseModel):
+    """保存1688 Cookie请求"""
+    cookie: str = Field(..., min_length=10, description="1688登录Cookie")
+
+
+async def _ensure_1688_auth_table(session: AsyncSession) -> None:
+    """确保1688登录态表存在"""
+    await session.execute(text("""
+        CREATE TABLE IF NOT EXISTS xy_1688_auth (
+            id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            owner_id BIGINT NOT NULL,
+            cookie LONGTEXT NULL,
+            storage_state LONGTEXT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'unknown',
+            last_check_at DATETIME NULL,
+            created_at DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_1688_auth_owner (owner_id),
+            KEY idx_1688_auth_owner (owner_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """))
+    await session.commit()
+
+
+@router.post("/1688/auth/cookie/save", response_model=ApiResponse)
+async def save_1688_cookie(
+    req: Save1688CookieRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """保存1688登录Cookie"""
+    cookie = (req.cookie or "").strip()
+    if len(cookie) < 10:
+        return ApiResponse(success=False, message="Cookie不能为空")
+
+    await _ensure_1688_auth_table(session)
+
+    await session.execute(
+        text("""
+            INSERT INTO xy_1688_auth (owner_id, cookie, status, last_check_at)
+            VALUES (:owner_id, :cookie, 'saved', NOW())
+            ON DUPLICATE KEY UPDATE
+                cookie = VALUES(cookie),
+                status = 'saved',
+                last_check_at = NOW(),
+                updated_at = NOW()
+        """),
+        {"owner_id": current_user.id, "cookie": cookie},
+    )
+    await session.commit()
+
+    return ApiResponse(success=True, message="1688 Cookie已保存", data={"has_cookie": True, "status": "saved"})
+
+
+@router.get("/1688/auth/status", response_model=ApiResponse)
+async def get_1688_auth_status(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """检测是否已保存1688登录态"""
+    await _ensure_1688_auth_table(session)
+
+    row = (
+        await session.execute(
+            text("""
+                SELECT cookie, status, last_check_at, updated_at
+                FROM xy_1688_auth
+                WHERE owner_id = :owner_id
+                LIMIT 1
+            """),
+            {"owner_id": current_user.id},
+        )
+    ).mappings().first()
+
+    has_cookie = bool(row and row.get("cookie"))
+    return ApiResponse(
+        success=True,
+        message="查询成功",
+        data={
+            "has_cookie": has_cookie,
+            "status": row.get("status") if row else "none",
+            "last_check_at": str(row.get("last_check_at")) if row and row.get("last_check_at") else None,
+            "updated_at": str(row.get("updated_at")) if row and row.get("updated_at") else None,
+        },
+    )
+
+
+@router.post("/1688/auth/cookie/clear", response_model=ApiResponse)
+async def clear_1688_cookie(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """清除1688登录Cookie"""
+    await _ensure_1688_auth_table(session)
+
+    await session.execute(
+        text("""
+            UPDATE xy_1688_auth
+            SET cookie = NULL,
+                storage_state = NULL,
+                status = 'cleared',
+                updated_at = NOW()
+            WHERE owner_id = :owner_id
+        """),
+        {"owner_id": current_user.id},
+    )
+    await session.commit()
+
+    return ApiResponse(success=True, message="1688 Cookie已清除", data={"has_cookie": False, "status": "cleared"})
 
 
 # ==================== 素材库接口 ====================

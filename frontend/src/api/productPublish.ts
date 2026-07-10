@@ -142,6 +142,30 @@ export interface PublishBatchResponseData {
 
 export type PublishBatchResponse = ApiResponse<PublishBatchResponseData>
 
+
+
+// ==================== 1688 导入接口 ====================
+
+export interface Auth1688Status {
+  has_cookie: boolean
+  status: string
+  last_check_at?: string | null
+  updated_at?: string | null
+}
+
+/** 保存1688 Cookie */
+export const save1688Cookie = (cookie: string): Promise<ApiResponse<{ has_cookie: boolean; status: string }>> =>
+  post(`${PREFIX}/1688/auth/cookie/save`, { cookie })
+
+/** 查询1688登录状态 */
+export const get1688AuthStatus = (): Promise<ApiResponse<Auth1688Status>> =>
+  get(`${PREFIX}/1688/auth/status`)
+
+/** 清除1688 Cookie */
+export const clear1688Cookie = (): Promise<ApiResponse<{ has_cookie: boolean; status: string }>> =>
+  post(`${PREFIX}/1688/auth/cookie/clear`, {})
+
+
 // ==================== 素材库接口 ====================
 
 /** 创建素材 */

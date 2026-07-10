@@ -13,7 +13,7 @@ import { motion } from 'framer-motion'
 import { Plus, Pencil, Trash2, RefreshCw, Image, ChevronLeft, ChevronRight, Search, X, Download, Upload } from 'lucide-react'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
-import { getMaterials, deleteMaterial, batchDeleteMaterials, exportMaterials, exportMaterialsWithImages, importMaterials, type ProductMaterial } from '@/api/productPublish'
+import { getMaterials, deleteMaterial, batchDeleteMaterials, exportMaterials, exportMaterialsWithImages, importMaterials, get1688AuthStatus, save1688Cookie, type Auth1688Status, type ProductMaterial } from '@/api/productPublish'
 import { PageLoading } from '@/components/common/Loading'
 import { ConfirmModal } from '@/components/common/ConfirmModal'
 import { MaterialFormModal } from './MaterialFormModal'
@@ -49,6 +49,11 @@ export function ProductMaterials() {
   const [exporting, setExporting] = useState(false)
   const [exportingImages, setExportingImages] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [show1688Import, setShow1688Import] = useState(false)
+  const [checking1688Auth, setChecking1688Auth] = useState(false)
+  const [saving1688Cookie, setSaving1688Cookie] = useState(false)
+  const [auth1688Status, setAuth1688Status] = useState<Auth1688Status | null>(null)
+  const [cookie1688, setCookie1688] = useState('')
   const [pendingImportFile, setPendingImportFile] = useState<File | null>(null)
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const imageFolderInputRef = useRef<HTMLInputElement | null>(null)
@@ -272,6 +277,50 @@ export function ProductMaterials() {
   }
 
   /** 全选/取消全选当前页 */
+  const handleCheck1688Auth = async () => {
+    try {
+      setChecking1688Auth(true)
+      const res = await get1688AuthStatus()
+      if (res.success) {
+        setAuth1688Status(res.data || null)
+      } else {
+        window.alert(res.message || '检测1688登录状态失败')
+      }
+    } catch (err: any) {
+      window.alert(err?.message || '检测1688登录状态失败')
+    } finally {
+      setChecking1688Auth(false)
+    }
+  }
+
+  const handleOpen1688Import = async () => {
+    setShow1688Import(true)
+    await handleCheck1688Auth()
+  }
+
+  const handleSave1688Cookie = async () => {
+    const cookie = cookie1688.trim()
+    if (!cookie) {
+      window.alert('请先粘贴1688 Cookie')
+      return
+    }
+    try {
+      setSaving1688Cookie(true)
+      const res = await save1688Cookie(cookie)
+      if (res.success) {
+        window.alert('1688 Cookie已保存')
+        setCookie1688('')
+        await handleCheck1688Auth()
+      } else {
+        window.alert(res.message || '保存1688 Cookie失败')
+      }
+    } catch (err: any) {
+      window.alert(err?.message || '保存1688 Cookie失败')
+    } finally {
+      setSaving1688Cookie(false)
+    }
+  }
+
   const handleSelectAll = () => {
     if (materials.length === 0) return
     const currentPageIds = materials.map(m => m.id)
@@ -325,9 +374,14 @@ export function ProductMaterials() {
             onChange={e => handleChooseImageFolderAndImport(e.target.files)}
           />
           {!pendingImportFile ? (
-            <button className="btn-ios-secondary" onClick={() => importInputRef.current?.click()} disabled={importing}>
-              <Upload className={`w-4 h-4 ${importing ? 'animate-pulse' : ''}`} />{importing ? '导入中...' : '导入'}
-            </button>
+            <>
+              <button className="btn-ios-secondary" onClick={handleOpen1688Import} disabled={importing}>
+                1688导入
+              </button>
+              <button className="btn-ios-secondary" onClick={() => importInputRef.current?.click()} disabled={importing}>
+                <Upload className={`w-4 h-4 ${importing ? 'animate-pulse' : ''}`} />{importing ? '导入中...' : '导入'}
+              </button>
+            </>
           ) : (
             <>
               <button className="btn-ios-secondary" onClick={openImageFolderPicker} disabled={importing} title={`已选择：${pendingImportFile.name}`}>
@@ -517,6 +571,63 @@ export function ProductMaterials() {
           </div>
         )}
       </motion.div>
+
+      {/* 1688导入弹窗 */}
+      {show1688Import && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">1688导入</h3>
+                  <p className="text-sm text-gray-500 mt-1">第一版先保存1688登录Cookie，下一步再解析商品链接。</p>
+                </div>
+                <button className="btn-ios-secondary btn-sm" onClick={() => setShow1688Import(false)}>
+                  关闭
+                </button>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 p-4 mb-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-medium text-gray-900">1688登录状态</div>
+                    <div className="text-sm text-gray-500 mt-1">
+                      {auth1688Status?.has_cookie ? '已保存1688 Cookie' : '未检测到1688 Cookie'}
+                    </div>
+                    {auth1688Status?.updated_at && (
+                      <div className="text-xs text-gray-400 mt-1">更新时间：{auth1688Status.updated_at}</div>
+                    )}
+                  </div>
+                  <button className="btn-ios-secondary btn-sm" onClick={handleCheck1688Auth} disabled={checking1688Auth}>
+                    {checking1688Auth ? '检测中...' : '重新检测'}
+                  </button>
+                </div>
+              </div>
+
+              {!auth1688Status?.has_cookie && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">粘贴1688 Cookie</label>
+                    <textarea
+                      className="w-full min-h-[160px] rounded-xl border border-gray-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                      value={cookie1688}
+                      onChange={e => setCookie1688(e.target.value)}
+                      placeholder="在浏览器登录1688后，复制请求Cookie粘贴到这里"
+                    />
+                  </div>
+                  <button className="btn-ios-primary" onClick={handleSave1688Cookie} disabled={saving1688Cookie}>
+                    {saving1688Cookie ? '保存中...' : '保存Cookie'}
+                  </button>
+                </div>
+              )}
+
+              {auth1688Status?.has_cookie && (
+                <div className="rounded-xl bg-green-50 border border-green-200 p-4 text-sm text-green-700">
+                  1688登录态已保存。下一步将增加“粘贴1688商品链接 → 解析标题、图片、价格、SKU、运费”的功能。
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
       {/* 新建/编辑弹窗 */}
       {showModal && (
