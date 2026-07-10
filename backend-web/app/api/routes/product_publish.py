@@ -134,6 +134,14 @@ class Ali1688PressRequest(BaseModel):
     key: str = Field(..., description="按键，例如 Enter / Tab / Backspace")
 
 
+class Ali1688DragRequest(BaseModel):
+    """1688服务器浏览器拖动请求"""
+    start_x: float = Field(..., description="起点X坐标")
+    start_y: float = Field(..., description="起点Y坐标")
+    end_x: float = Field(..., description="终点X坐标")
+    end_y: float = Field(..., description="终点Y坐标")
+
+
 async def _ensure_1688_auth_table(session: AsyncSession) -> None:
     """确保1688登录态表存在"""
     await session.execute(text("""
@@ -277,6 +285,25 @@ async def press_1688_browser(
     try:
         data = await ali1688_login_service.press(current_user.id, req.key)
         return ApiResponse(success=True, message="按键成功", data=data)
+    except Exception as exc:
+        return ApiResponse(success=False, message=str(exc))
+
+
+@router.post("/1688/browser/drag", response_model=ApiResponse)
+async def drag_1688_browser(
+    req: Ali1688DragRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """拖动1688服务器浏览器，用于滑块验证"""
+    try:
+        data = await ali1688_login_service.drag(
+            current_user.id,
+            req.start_x,
+            req.start_y,
+            req.end_x,
+            req.end_y,
+        )
+        return ApiResponse(success=True, message="拖动成功", data=data)
     except Exception as exc:
         return ApiResponse(success=False, message=str(exc))
 

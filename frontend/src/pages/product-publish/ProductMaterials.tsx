@@ -8,12 +8,12 @@
  * 4. 勾选批量删除
  * 5. 素材用于单品发布和批量发布
  */
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type MouseEvent } from 'react'
 import { motion } from 'framer-motion'
 import { Plus, Pencil, Trash2, RefreshCw, Image, ChevronLeft, ChevronRight, Search, X, Download, Upload } from 'lucide-react'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
-import { getMaterials, deleteMaterial, batchDeleteMaterials, exportMaterials, exportMaterialsWithImages, importMaterials, get1688AuthStatus, save1688Cookie, type Auth1688Status, type ProductMaterial } from '@/api/productPublish'
+import { getMaterials, deleteMaterial, batchDeleteMaterials, exportMaterials, exportMaterialsWithImages, importMaterials, get1688AuthStatus, save1688Cookie, start1688BrowserLogin, get1688BrowserScreenshot, click1688Browser, type1688Browser, press1688Browser, drag1688Browser, finish1688BrowserLogin, close1688BrowserLogin, type Auth1688Status, type Browser1688Screenshot, type ProductMaterial } from '@/api/productPublish'
 import { PageLoading } from '@/components/common/Loading'
 import { ConfirmModal } from '@/components/common/ConfirmModal'
 import { MaterialFormModal } from './MaterialFormModal'
@@ -54,6 +54,11 @@ export function ProductMaterials() {
   const [saving1688Cookie, setSaving1688Cookie] = useState(false)
   const [auth1688Status, setAuth1688Status] = useState<Auth1688Status | null>(null)
   const [cookie1688, setCookie1688] = useState('')
+  const [browser1688Loading, setBrowser1688Loading] = useState(false)
+  const [browser1688Screenshot, setBrowser1688Screenshot] = useState<Browser1688Screenshot | null>(null)
+  const [browser1688Input, setBrowser1688Input] = useState('')
+  const [browser1688DragMode, setBrowser1688DragMode] = useState(false)
+  const [browser1688DragStart, setBrowser1688DragStart] = useState<{ x: number; y: number } | null>(null)
   const [pendingImportFile, setPendingImportFile] = useState<File | null>(null)
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const imageFolderInputRef = useRef<HTMLInputElement | null>(null)
@@ -321,6 +326,144 @@ export function ProductMaterials() {
     }
   }
 
+  const refresh1688BrowserScreenshot = async () => {
+    const res = await get1688BrowserScreenshot()
+    if (res.success && res.data) {
+      setBrowser1688Screenshot(res.data)
+    } else {
+      window.alert(res.message || '获取1688服务器浏览器截图失败')
+    }
+  }
+
+  const handleStart1688BrowserLogin = async () => {
+    try {
+      setBrowser1688Loading(true)
+      const res = await start1688BrowserLogin()
+      if (!res.success) {
+        window.alert(res.message || '打开1688服务器浏览器失败')
+        return
+      }
+      await refresh1688BrowserScreenshot()
+    } catch (err: any) {
+      window.alert(err?.message || '打开1688服务器浏览器失败')
+    } finally {
+      setBrowser1688Loading(false)
+    }
+  }
+
+  const handleClick1688Screenshot = async (e: MouseEvent<HTMLImageElement>) => {
+    if (!browser1688Screenshot) return
+
+    const img = e.currentTarget
+    const rect = img.getBoundingClientRect()
+    const scaleX = img.naturalWidth / rect.width
+    const scaleY = img.naturalHeight / rect.height
+
+    const x = (e.clientX - rect.left) * scaleX
+    const y = (e.clientY - rect.top) * scaleY
+
+    try {
+      setBrowser1688Loading(true)
+
+      if (browser1688DragMode) {
+        if (!browser1688DragStart) {
+          setBrowser1688DragStart({ x, y })
+          window.alert('已记录滑块起点，请再点击要拖到的位置')
+          return
+        }
+
+        const res = await drag1688Browser(browser1688DragStart.x, browser1688DragStart.y, x, y)
+        setBrowser1688DragStart(null)
+        setBrowser1688DragMode(false)
+
+        if (!res.success) {
+          window.alert(res.message || '拖动滑块失败')
+          return
+        }
+
+        setTimeout(() => {
+          refresh1688BrowserScreenshot().catch(() => {})
+        }, 800)
+        return
+      }
+
+      const res = await click1688Browser(x, y)
+      if (!res.success) {
+        window.alert(res.message || '点击1688服务器浏览器失败')
+        return
+      }
+      setTimeout(() => {
+        refresh1688BrowserScreenshot().catch(() => {})
+      }, 500)
+    } catch (err: any) {
+      window.alert(err?.message || '点击1688服务器浏览器失败')
+    } finally {
+      setBrowser1688Loading(false)
+    }
+  }
+
+  const handleType1688BrowserInput = async () => {
+    const text = browser1688Input
+    if (!text) return
+
+    try {
+      setBrowser1688Loading(true)
+      const res = await type1688Browser(text)
+      if (!res.success) {
+        window.alert(res.message || '输入失败')
+        return
+      }
+      setBrowser1688Input('')
+      await refresh1688BrowserScreenshot()
+    } catch (err: any) {
+      window.alert(err?.message || '输入失败')
+    } finally {
+      setBrowser1688Loading(false)
+    }
+  }
+
+  const handlePress1688BrowserKey = async (key: string) => {
+    try {
+      setBrowser1688Loading(true)
+      const res = await press1688Browser(key)
+      if (!res.success) {
+        window.alert(res.message || '按键失败')
+        return
+      }
+      await refresh1688BrowserScreenshot()
+    } catch (err: any) {
+      window.alert(err?.message || '按键失败')
+    } finally {
+      setBrowser1688Loading(false)
+    }
+  }
+
+  const handleFinish1688BrowserLogin = async () => {
+    try {
+      setBrowser1688Loading(true)
+      const res = await finish1688BrowserLogin()
+      if (res.success) {
+        window.alert('1688登录态已自动保存')
+        setBrowser1688Screenshot(null)
+        await handleCheck1688Auth()
+      } else {
+        window.alert(res.message || '保存1688登录态失败')
+      }
+    } catch (err: any) {
+      window.alert(err?.message || '保存1688登录态失败')
+    } finally {
+      setBrowser1688Loading(false)
+    }
+  }
+
+  const handleClose1688BrowserLogin = async () => {
+    try {
+      await close1688BrowserLogin()
+    } catch {}
+    setBrowser1688Screenshot(null)
+    setShow1688Import(false)
+  }
+
   const handleSelectAll = () => {
     if (materials.length === 0) return
     const currentPageIds = materials.map(m => m.id)
@@ -575,13 +718,13 @@ export function ProductMaterials() {
       {/* 1688导入弹窗 */}
       {show1688Import && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl p-6">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-6xl max-h-[92vh] overflow-y-auto p-6">
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900">1688导入</h3>
-                  <p className="text-sm text-gray-500 mt-1">第一版先保存1688登录Cookie，下一步再解析商品链接。</p>
+                  <p className="text-sm text-gray-500 mt-1">使用服务器浏览器登录1688，登录完成后系统自动保存Cookie。</p>
                 </div>
-                <button className="btn-ios-secondary btn-sm" onClick={() => setShow1688Import(false)}>
+                <button className="btn-ios-secondary btn-sm" onClick={handleClose1688BrowserLogin}>
                   关闭
                 </button>
               </div>
@@ -604,19 +747,88 @@ export function ProductMaterials() {
               </div>
 
               {!auth1688Status?.has_cookie && (
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">粘贴1688 Cookie</label>
-                    <textarea
-                      className="w-full min-h-[160px] rounded-xl border border-gray-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
-                      value={cookie1688}
-                      onChange={e => setCookie1688(e.target.value)}
-                      placeholder="在浏览器登录1688后，复制请求Cookie粘贴到这里"
-                    />
+                <div className="space-y-4">
+                  <div className="flex flex-wrap gap-2">
+                    <button className="btn-ios-primary" onClick={handleStart1688BrowserLogin} disabled={browser1688Loading}>
+                      {browser1688Loading ? '处理中...' : '打开1688服务器登录'}
+                    </button>
+                    <button className="btn-ios-secondary" onClick={refresh1688BrowserScreenshot} disabled={browser1688Loading || !browser1688Screenshot}>
+                      刷新截图
+                    </button>
+                    <button className="btn-ios-secondary" onClick={() => handlePress1688BrowserKey('Tab')} disabled={browser1688Loading || !browser1688Screenshot}>
+                      Tab
+                    </button>
+                    <button className="btn-ios-secondary" onClick={() => handlePress1688BrowserKey('Enter')} disabled={browser1688Loading || !browser1688Screenshot}>
+                      Enter
+                    </button>
+                    <button className="btn-ios-secondary" onClick={() => handlePress1688BrowserKey('Backspace')} disabled={browser1688Loading || !browser1688Screenshot}>
+                      退格
+                    </button>
+                    <button
+                      className={browser1688DragMode ? "btn-ios-primary" : "btn-ios-secondary"}
+                      onClick={() => {
+                        setBrowser1688DragMode(v => !v)
+                        setBrowser1688DragStart(null)
+                      }}
+                      disabled={browser1688Loading || !browser1688Screenshot}
+                    >
+                      {browser1688DragMode ? '滑块模式已开' : '滑块拖动模式'}
+                    </button>
+                    <button
+                      className="btn-ios-primary ml-auto"
+                      onClick={handleFinish1688BrowserLogin}
+                      disabled={browser1688Loading || !browser1688Screenshot}
+                    >
+                      我已完成登录，自动保存Cookie
+                    </button>
                   </div>
-                  <button className="btn-ios-primary" onClick={handleSave1688Cookie} disabled={saving1688Cookie}>
-                    {saving1688Cookie ? '保存中...' : '保存Cookie'}
-                  </button>
+
+                  {browser1688Screenshot && (
+                    <div className="space-y-3">
+                      <div className="flex gap-2">
+                        <input
+                          className="flex-1 rounded-xl border border-gray-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                          value={browser1688Input}
+                          onChange={e => setBrowser1688Input(e.target.value)}
+                          placeholder="输入账号、密码、短信验证码，然后点“输入到浏览器”"
+                        />
+                        <button className="btn-ios-secondary" onClick={handleType1688BrowserInput} disabled={browser1688Loading || !browser1688Input}>
+                          输入到浏览器
+                        </button>
+                      </div>
+
+                      <details className="rounded-xl border border-gray-200 p-3">
+                        <summary className="cursor-pointer text-sm text-gray-600">备用：手动粘贴1688 Cookie</summary>
+                        <div className="mt-3 space-y-3">
+                          <textarea
+                            className="w-full min-h-[120px] rounded-xl border border-gray-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                            value={cookie1688}
+                            onChange={e => setCookie1688(e.target.value)}
+                            placeholder="备用方式：在浏览器登录1688后，复制请求Cookie粘贴到这里"
+                          />
+                          <button className="btn-ios-secondary" onClick={handleSave1688Cookie} disabled={saving1688Cookie}>
+                            {saving1688Cookie ? '保存中...' : '保存Cookie'}
+                          </button>
+                        </div>
+                      </details>
+
+                      <div className="text-xs text-gray-500">
+                        当前页面：{browser1688Screenshot.title || '-'} ｜ {browser1688Screenshot.url || '-'}
+                      </div>
+                      {browser1688DragMode && (
+                        <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
+                          滑块拖动模式：先点击滑块起点，再点击要拖到的位置。
+                        </div>
+                      )}
+                      <img
+                        src={browser1688Screenshot.image}
+                        onClick={handleClick1688Screenshot}
+                        className="w-full max-h-[72vh] object-contain rounded-xl border border-gray-200 cursor-crosshair bg-gray-50"
+                        alt="1688服务器浏览器截图"
+                      />
+
+                    </div>
+                  )}
                 </div>
               )}
 

@@ -166,6 +166,56 @@ export const clear1688Cookie = (): Promise<ApiResponse<{ has_cookie: boolean; st
   post(`${PREFIX}/1688/auth/cookie/clear`, {})
 
 
+export interface Browser1688Screenshot {
+  image: string
+  url: string
+  title: string
+}
+
+/** 打开1688服务器浏览器登录页 */
+export const start1688BrowserLogin = (): Promise<ApiResponse<{ started: boolean; url: string; title: string }>> =>
+  post(`${PREFIX}/1688/browser/start`, {})
+
+/** 获取1688服务器浏览器截图 */
+export const get1688BrowserScreenshot = (): Promise<ApiResponse<Browser1688Screenshot>> =>
+  get(`${PREFIX}/1688/browser/screenshot`)
+
+/** 点击1688服务器浏览器 */
+export const click1688Browser = (x: number, y: number): Promise<ApiResponse> =>
+  post(`${PREFIX}/1688/browser/click`, { x, y })
+
+/** 向1688服务器浏览器当前焦点输入文字 */
+export const type1688Browser = (text: string): Promise<ApiResponse> =>
+  post(`${PREFIX}/1688/browser/type`, { text })
+
+/** 向1688服务器浏览器发送按键 */
+export const press1688Browser = (key: string): Promise<ApiResponse> =>
+  post(`${PREFIX}/1688/browser/press`, { key })
+
+
+/** 拖动1688服务器浏览器，用于滑块验证 */
+export const drag1688Browser = (
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number
+): Promise<ApiResponse> =>
+  post(`${PREFIX}/1688/browser/drag`, {
+    start_x: startX,
+    start_y: startY,
+    end_x: endX,
+    end_y: endY,
+  })
+
+/** 完成1688服务器浏览器登录并自动保存Cookie */
+export const finish1688BrowserLogin = (): Promise<ApiResponse<{ has_cookie: boolean; cookie_count: number; url: string; title: string }>> =>
+  post(`${PREFIX}/1688/browser/finish`, {})
+
+/** 关闭1688服务器浏览器 */
+export const close1688BrowserLogin = (): Promise<ApiResponse> =>
+  post(`${PREFIX}/1688/browser/close`, {})
+
+
 // ==================== 素材库接口 ====================
 
 /** 创建素材 */

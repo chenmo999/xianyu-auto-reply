@@ -53,17 +53,33 @@ class Ali1688LoginService:
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars",
+                    "--window-size=1600,1000",
                 ],
             )
             context = await browser.new_context(
-                viewport={"width": 1280, "height": 900},
+                viewport={"width": 1600, "height": 1000},
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/120.0.0.0 Safari/537.36"
                 ),
                 locale="zh-CN",
+                timezone_id="Asia/Shanghai",
             )
+
+            await context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['zh-CN', 'zh']
+                });
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+            """)
+
             page = await context.new_page()
             await page.goto(ALI1688_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
 
@@ -117,6 +133,41 @@ class Ali1688LoginService:
         """按键，例如 Enter、Tab、Backspace"""
         session = self._get_session(owner_id)
         await session.page.keyboard.press(key)
+        return {"success": True}
+
+    async def drag(self, owner_id: int, start_x: float, start_y: float, end_x: float, end_y: float) -> dict[str, Any]:
+        """拖动页面坐标，用于滑块验证：慢拖、分段、轻微抖动"""
+        session = self._get_session(owner_id)
+        page = session.page
+
+        distance_x = end_x - start_x
+
+        await page.mouse.move(start_x, start_y)
+        await page.wait_for_timeout(300)
+        await page.mouse.down()
+        await page.wait_for_timeout(300)
+
+        # 第一段：慢慢拖到 40%
+        await page.mouse.move(start_x + distance_x * 0.40, start_y + 2, steps=20)
+        await page.wait_for_timeout(250)
+
+        # 第二段：拖到 75%
+        await page.mouse.move(start_x + distance_x * 0.75, start_y - 1, steps=25)
+        await page.wait_for_timeout(200)
+
+        # 第三段：接近终点，略微超过一点
+        await page.mouse.move(end_x + 8, start_y + 1, steps=20)
+        await page.wait_for_timeout(150)
+
+        # 小回拉，再到终点，更像真人
+        await page.mouse.move(end_x - 3, start_y, steps=8)
+        await page.wait_for_timeout(120)
+        await page.mouse.move(end_x, start_y, steps=6)
+        await page.wait_for_timeout(200)
+
+        await page.mouse.up()
+        await page.wait_for_timeout(800)
+
         return {"success": True}
 
     async def finish(self, owner_id: int) -> dict[str, Any]:
