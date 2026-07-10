@@ -1,0 +1,6 @@
+ARG IMAGE_REGISTRY=registry.cn-shanghai.aliyuncs.com/zhinian-software
+ARG IMAGE_TAG=latest
+FROM ${IMAGE_REGISTRY}/xianyu-backend-web:${IMAGE_TAG}
+WORKDIR /app
+COPY common /app/common
+COPY backend-web /app/backend-web
