@@ -138,8 +138,8 @@ async def _ensure_1688_auth_table(session: AsyncSession) -> None:
 @router.post("/1688/auth/cookie/save", response_model=ApiResponse)
 async def save_1688_cookie(
     req: Save1688CookieRequest,
-    current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_db_session),
 ):
     """保存1688登录Cookie"""
     cookie = (req.cookie or "").strip()
@@ -167,8 +167,8 @@ async def save_1688_cookie(
 
 @router.get("/1688/auth/status", response_model=ApiResponse)
 async def get_1688_auth_status(
-    current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_db_session),
 ):
     """检测是否已保存1688登录态"""
     await _ensure_1688_auth_table(session)
@@ -200,8 +200,8 @@ async def get_1688_auth_status(
 
 @router.post("/1688/auth/cookie/clear", response_model=ApiResponse)
 async def clear_1688_cookie(
-    current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_db_session),
 ):
     """清除1688登录Cookie"""
     await _ensure_1688_auth_table(session)
