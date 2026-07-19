@@ -1,0 +1,30 @@
+ARG IMAGE_REGISTRY=registry.cn-shanghai.aliyuncs.com/zhinian-software
+ARG IMAGE_TAG=latest
+
+FROM docker.m.daocloud.io/library/node:20-alpine AS build
+WORKDIR /app
+COPY frontend/package*.json ./
+COPY frontend/pnpm-lock.yaml* ./
+COPY frontend/yarn.lock* ./
+RUN corepack enable 2>/dev/null || true
+RUN if [ -f pnpm-lock.yaml ]; then \
+      pnpm install --frozen-lockfile || pnpm install; \
+    elif [ -f yarn.lock ]; then \
+      yarn install --frozen-lockfile || yarn install; \
+    elif [ -f package-lock.json ]; then \
+      npm ci --legacy-peer-deps || npm install --legacy-peer-deps; \
+    else \
+      npm install --legacy-peer-deps; \
+    fi
+COPY frontend/ ./
+RUN if [ -f pnpm-lock.yaml ]; then \
+      pnpm build; \
+    elif [ -f yarn.lock ]; then \
+      yarn build; \
+    else \
+      npm run build; \
+    fi
+
+FROM ${IMAGE_REGISTRY}/xianyu-frontend:${IMAGE_TAG}
+RUN rm -rf /usr/share/nginx/html/*
+COPY --from=build /app/dist /usr/share/nginx/html
