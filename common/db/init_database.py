@@ -362,6 +362,8 @@ class DatabaseInitializer:
                 cookie TEXT NOT NULL COMMENT 'Cookie信息',
                 login_method VARCHAR(20) NOT NULL COMMENT '登录方式',
                 status VARCHAR(20) NOT NULL DEFAULT 'active' COMMENT '账号状态',
+                category VARCHAR(32) NOT NULL DEFAULT '默认' COMMENT '账号分类/分组',
+                sort_order INT NOT NULL DEFAULT 0 COMMENT '账号排序',
                 username VARCHAR(120) COMMENT '登录用户名',
                 login_password TEXT COMMENT '登录密码',
                 remark VARCHAR(255) COMMENT '备注',
@@ -1690,6 +1692,8 @@ class DatabaseInitializer:
             ("call_user", "VARCHAR(128) DEFAULT NULL COMMENT '调用用户：仅远程调用记录(按秘钥查到的用户名)'", "call_type"),
         ],
         "xy_accounts": [
+            ("category", "VARCHAR(32) NOT NULL DEFAULT '默认' COMMENT '账号分类/分组'", "status"),
+            ("sort_order", "INT NOT NULL DEFAULT 0 COMMENT '账号排序'", "category"),
             ("proxy_type", "VARCHAR(20) DEFAULT 'none' COMMENT '代理类型'", "last_refresh_at"),
             ("proxy_host", "VARCHAR(255) COMMENT '代理主机'", "proxy_type"),
             ("proxy_port", "INT COMMENT '代理端口'", "proxy_host"),
